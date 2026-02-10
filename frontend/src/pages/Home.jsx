@@ -1,17 +1,45 @@
+import { Link } from 'react-router-dom'
+import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { CalendarDays, MapPin, Users } from 'lucide-react'
+import { CalendarDays, MapPin, Users, LogOut, Loader2 } from 'lucide-react'
 
 function Home() {
+  const { user, loading, logout } = useAuth()
+
   return (
     <div className="flex flex-col min-h-screen">
       <header className="border-b">
         <div className="container mx-auto flex h-16 items-center justify-between px-4">
-          <h1 className="text-2xl font-bold tracking-tight">Mehfil</h1>
+          <Link to="/" className="text-2xl font-bold tracking-tight">
+            Mehfil
+          </Link>
           <nav className="flex items-center gap-4">
-            <Button variant="ghost">Events</Button>
-            <Button variant="ghost">About</Button>
-            <Button>Sign In</Button>
+            <Button variant="ghost" asChild>
+              <Link to="/">Events</Link>
+            </Button>
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : user ? (
+              <>
+                <span className="text-sm text-muted-foreground hidden sm:inline">
+                  {user.name}
+                </span>
+                <Button variant="ghost" size="sm" onClick={logout}>
+                  <LogOut className="h-4 w-4 mr-1" />
+                  Sign Out
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button variant="ghost" asChild>
+                  <Link to="/login">Sign In</Link>
+                </Button>
+                <Button asChild>
+                  <Link to="/signup">Sign Up</Link>
+                </Button>
+              </>
+            )}
           </nav>
         </div>
       </header>
@@ -26,8 +54,12 @@ function Home() {
             payment processing, and location services.
           </p>
           <div className="mt-10 flex items-center justify-center gap-4">
-            <Button size="lg">Create Event</Button>
-            <Button variant="outline" size="lg">Explore Events</Button>
+            <Button size="lg" asChild>
+              <Link to={user ? '/create-event' : '/signup'}>Create Event</Link>
+            </Button>
+            <Button variant="outline" size="lg" asChild>
+              <Link to="/">Explore Events</Link>
+            </Button>
           </div>
         </section>
 

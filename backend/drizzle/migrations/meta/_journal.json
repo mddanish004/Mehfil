@@ -8,6 +8,13 @@
       "when": 1770670813417,
       "tag": "0000_purple_zombie",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1770672841319,
+      "tag": "0001_rare_ink",
+      "breakpoints": true
     }
   ]
 }

@@ -200,6 +200,38 @@ export const emailVerifications = pgTable(
   (table) => [index('idx_email_verifications_email').on(table.email)]
 )
 
+export const refreshTokens = pgTable(
+  'refresh_tokens',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    token: varchar('token', { length: 500 }).notNull().unique(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('idx_refresh_tokens_user').on(table.userId),
+    index('idx_refresh_tokens_token').on(table.token),
+  ]
+)
+
+export const passwordResetTokens = pgTable(
+  'password_reset_tokens',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    token: varchar('token', { length: 500 }).notNull().unique(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    used: boolean('used').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('idx_password_reset_tokens_token').on(table.token)]
+)
+
 export const payments = pgTable(
   'payments',
   {
@@ -239,12 +271,28 @@ export const eventUpdates = pgTable(
   (table) => [index('idx_event_updates_event').on(table.eventId)]
 )
 
+export const refreshTokensRelations = relations(refreshTokens, ({ one }) => ({
+  user: one(users, {
+    fields: [refreshTokens.userId],
+    references: [users.id],
+  }),
+}))
+
+export const passwordResetTokensRelations = relations(passwordResetTokens, ({ one }) => ({
+  user: one(users, {
+    fields: [passwordResetTokens.userId],
+    references: [users.id],
+  }),
+}))
+
 export const usersRelations = relations(users, ({ many }) => ({
   createdEvents: many(events),
   eventHosts: many(eventHosts),
   registrations: many(registrations),
   emailBlasts: many(emailBlasts),
   eventUpdates: many(eventUpdates),
+  refreshTokens: many(refreshTokens),
+  passwordResetTokens: many(passwordResetTokens),
 }))
 
 export const eventsRelations = relations(events, ({ one, many }) => ({

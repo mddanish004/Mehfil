@@ -14,13 +14,19 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.95.3",
+    "bcrypt": "^6.0.0",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "dotenv": "^17.2.4",
     "drizzle-orm": "^0.45.1",
     "express": "^5.2.1",
     "express-rate-limit": "^8.2.1",
     "helmet": "^8.1.0",
-    "postgres": "^3.4.8"
+    "jsonwebtoken": "^9.0.3",
+    "passport": "^0.7.0",
+    "passport-google-oauth20": "^2.0.0",
+    "postgres": "^3.4.8",
+    "resend": "^6.9.1"
   },
   "devDependencies": {
     "drizzle-kit": "^0.31.9"

@@ -2,6 +2,7 @@ import 'dotenv/config'
 import { drizzle } from 'drizzle-orm/postgres-js'
 import postgres from 'postgres'
 import { randomUUID } from 'crypto'
+import bcrypt from 'bcrypt'
 import {
   users,
   events,
@@ -22,6 +23,8 @@ if (!DATABASE_URL) {
 
 const client = postgres(DATABASE_URL, { prepare: false })
 const db = drizzle(client)
+
+const PASSWORD_HASH = await bcrypt.hash('Password123', 12)
 
 function generateShortId(length = 8) {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
@@ -62,7 +65,7 @@ async function seed() {
     {
       id: userIds.sarah,
       email: 'sarah@example.com',
-      passwordHash: '$2b$12$LJ3m4ys8Ox1LbSqGfp/OTOaT7MfVkh1RqGJGpXjIs8ycVfJFEjbWi',
+      passwordHash: PASSWORD_HASH,
       name: 'Sarah Chen',
       phone: '+1-555-0101',
       socialProfileLink: 'https://linkedin.com/in/sarahchen',
@@ -73,7 +76,7 @@ async function seed() {
     {
       id: userIds.alex,
       email: 'alex@example.com',
-      passwordHash: '$2b$12$LJ3m4ys8Ox1LbSqGfp/OTOaT7MfVkh1RqGJGpXjIs8ycVfJFEjbWi',
+      passwordHash: PASSWORD_HASH,
       name: 'Alex Rivera',
       phone: '+1-555-0102',
       socialProfileLink: 'https://twitter.com/alexrivera',
@@ -95,7 +98,7 @@ async function seed() {
     {
       id: userIds.priya,
       email: 'priya@example.com',
-      passwordHash: '$2b$12$LJ3m4ys8Ox1LbSqGfp/OTOaT7MfVkh1RqGJGpXjIs8ycVfJFEjbWi',
+      passwordHash: PASSWORD_HASH,
       name: 'Priya Sharma',
       phone: '+91-98765-43210',
       socialProfileLink: 'https://linkedin.com/in/priyasharma',
@@ -106,7 +109,7 @@ async function seed() {
     {
       id: userIds.mike,
       email: 'mike@example.com',
-      passwordHash: '$2b$12$LJ3m4ys8Ox1LbSqGfp/OTOaT7MfVkh1RqGJGpXjIs8ycVfJFEjbWi',
+      passwordHash: PASSWORD_HASH,
       name: 'Mike Johnson',
       phone: '+1-555-0105',
       socialProfileLink: null,
