@@ -15,6 +15,13 @@
       "when": 1770672841319,
       "tag": "0001_rare_ink",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1770789600000,
+      "tag": "0002_guest_registration",
+      "breakpoints": true
     }
   ]
 }

@@ -1,8 +1,36 @@
 import { ZodError, z } from 'zod'
-import { createEvent, getEventByShortId, updateEventByShortId, cancelEventByShortId } from '../services/event.service.js'
+import {
+  createEvent,
+  getEventByShortId,
+  updateEventByShortId,
+  cancelEventByShortId,
+  listEvents,
+} from '../services/event.service.js'
 import { uploadEventPhoto } from '../services/upload.service.js'
 import { generateZoomMeetingLink } from '../services/zoom.service.js'
 import { searchLocations } from '../services/location.service.js'
+import {
+  approveRegistrationById,
+  registerForEvent,
+} from '../services/registration.service.js'
+
+const registrationQuestionSchema = z
+  .object({
+    questionText: z.string().trim().min(1).max(500),
+    questionType: z.enum(['text', 'multiple_choice', 'checkbox']),
+    options: z.array(z.string().trim().min(1).max(200)).max(20).optional().default([]),
+    isRequired: z.boolean().optional().default(false),
+    orderIndex: z.coerce.number().int().min(0).max(1000).optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.questionType !== 'text' && data.options.length < 2) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Choice questions need at least 2 options',
+        path: ['options'],
+      })
+    }
+  })
 
 const eventBaseSchema = z.object({
   name: z.string().trim().min(3).max(100),
@@ -23,6 +51,7 @@ const eventBaseSchema = z.object({
   capacityType: z.enum(['unlimited', 'limited']).optional(),
   capacityLimit: z.coerce.number().int().min(1).max(100000).optional().nullable(),
   status: z.enum(['draft', 'published', 'cancelled']).optional(),
+  registrationQuestions: z.array(registrationQuestionSchema).max(20).optional(),
 })
 
 const eventSchema = eventBaseSchema.superRefine((data, ctx) => {
@@ -97,6 +126,60 @@ const searchLocationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(10).optional(),
 })
 
+const listEventsSchema = z
+  .object({
+    search: z.string().trim().max(200).optional(),
+    startDate: z.coerce.date().optional(),
+    endDate: z.coerce.date().optional(),
+    location: z.string().trim().max(255).optional(),
+    priceType: z.enum(['all', 'free', 'paid']).optional(),
+    minPrice: z.coerce.number().min(0).optional(),
+    maxPrice: z.coerce.number().min(0).optional(),
+    status: z.enum(['all', 'draft', 'published', 'cancelled']).optional(),
+    sort: z.enum(['date', 'popularity', 'newest']).optional(),
+    page: z.coerce.number().int().min(1).optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.startDate && data.endDate && data.endDate < data.startDate) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'End date must be on or after start date',
+        path: ['endDate'],
+      })
+    }
+
+    if (
+      data.minPrice !== undefined &&
+      data.maxPrice !== undefined &&
+      Number(data.maxPrice) < Number(data.minPrice)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Max price must be greater than or equal to min price',
+        path: ['maxPrice'],
+      })
+    }
+  })
+
+const registerForEventSchema = z.object({
+  name: z.string().trim().min(2).max(255),
+  email: z.string().trim().email().max(255),
+  phone: z.string().trim().max(50).optional().nullable(),
+  socialProfileLink: z
+    .string()
+    .trim()
+    .url()
+    .max(500)
+    .optional()
+    .or(z.literal(''))
+    .nullable(),
+  registrationResponses: z.record(z.string(), z.any()).optional(),
+})
+
+const approveRegistrationParamsSchema = z.object({
+  registrationId: z.string().uuid(),
+})
+
 function parseSchema(schema, payload) {
   try {
     return schema.parse(payload)
@@ -131,7 +214,10 @@ async function handleCreateEvent(req, res, next) {
 
 async function handleGetEventByShortId(req, res, next) {
   try {
-    const event = await getEventByShortId(req.params.shortId)
+    const event = await getEventByShortId(req.params.shortId, {
+      userId: req.user?.id || null,
+      email: req.guest?.email || req.user?.email || null,
+    })
 
     if (!event) {
       return res.status(404).json({
@@ -143,6 +229,37 @@ async function handleGetEventByShortId(req, res, next) {
     res.json({
       success: true,
       data: { event },
+    })
+  } catch (error) {
+    next(error)
+  }
+}
+
+async function handleListEvents(req, res, next) {
+  try {
+    const parsedFilters = parseSchema(listEventsSchema, req.query || {})
+    const filters = { ...parsedFilters }
+
+    if (filters.startDate) {
+      const startDate = new Date(filters.startDate)
+      startDate.setHours(0, 0, 0, 0)
+      filters.startDate = startDate
+    }
+
+    if (filters.endDate) {
+      const endDate = new Date(filters.endDate)
+      endDate.setHours(23, 59, 59, 999)
+      filters.endDate = endDate
+    }
+
+    const result = await listEvents({
+      userId: req.user?.id || null,
+      filters,
+    })
+
+    res.json({
+      success: true,
+      data: result,
     })
   } catch (error) {
     next(error)
@@ -231,12 +348,52 @@ async function handleUploadEventPhoto(req, res, next) {
   }
 }
 
+async function handleRegisterForEvent(req, res, next) {
+  try {
+    const payload = parseSchema(registerForEventSchema, req.body || {})
+    const result = await registerForEvent({
+      shortId: req.params.shortId,
+      payload,
+      viewerUser: req.user || null,
+    })
+
+    res.status(201).json({
+      success: true,
+      data: result,
+      message: result.alreadyRegistered ? 'Already registered for this event' : 'OTP sent to your email',
+    })
+  } catch (error) {
+    next(error)
+  }
+}
+
+async function handleApproveRegistration(req, res, next) {
+  try {
+    const { registrationId } = parseSchema(approveRegistrationParamsSchema, req.params)
+    const registration = await approveRegistrationById({
+      registrationId,
+      userId: req.user.id,
+    })
+
+    res.json({
+      success: true,
+      data: { registration },
+      message: 'Registration approved',
+    })
+  } catch (error) {
+    next(error)
+  }
+}
+
 export {
   handleCreateEvent,
+  handleListEvents,
   handleGetEventByShortId,
   handleUpdateEvent,
   handleDeleteEvent,
   handleGenerateZoomLink,
   handleSearchLocations,
   handleUploadEventPhoto,
+  handleRegisterForEvent,
+  handleApproveRegistration,
 }

@@ -52,14 +52,20 @@ export function AuthProvider({ children }) {
     }
   }
 
-  const verifyEmail = async ({ email, otp }) => {
-    const { data } = await api.post('/auth/verify-email', { email, otp })
-    setUser(data.data.user)
+  const verifyEmail = async (payload) => {
+    const { data } = await api.post('/auth/verify-email', payload)
+    if (data?.data?.user) {
+      setUser(data.data.user)
+    }
     return data
   }
 
-  const resendOTP = async (email) => {
-    const { data } = await api.post('/auth/resend-otp', { email })
+  const resendOTP = async (payloadOrEmail) => {
+    const payload =
+      typeof payloadOrEmail === 'string'
+        ? { email: payloadOrEmail }
+        : payloadOrEmail
+    const { data } = await api.post('/auth/resend-otp', payload)
     return data
   }
 

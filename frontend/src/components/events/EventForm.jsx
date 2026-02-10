@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useForm, Controller } from 'react-hook-form'
+import { useFieldArray, useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Loader2, UploadCloud, WandSparkles } from 'lucide-react'
+import { Loader2, Plus, Trash2, UploadCloud, WandSparkles } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -55,6 +55,19 @@ function transformPayload(values) {
     zoomMeetingLink: values.locationType === 'virtual' ? values.zoomMeetingLink || null : null,
     ticketPrice: values.isPaid ? Number(values.ticketPrice || 0) : 0,
     capacityLimit: values.capacityType === 'limited' ? Number(values.capacityLimit) : null,
+    registrationQuestions: (values.registrationQuestions || []).map((question, index) => ({
+      questionText: question.questionText.trim(),
+      questionType: question.questionType,
+      options:
+        question.questionType === 'text'
+          ? []
+          : question.optionsText
+              .split('\n')
+              .map((item) => item.trim())
+              .filter(Boolean),
+      isRequired: Boolean(question.isRequired),
+      orderIndex: index,
+    })),
   }
 }
 
@@ -81,6 +94,15 @@ export default function EventForm({ mode = 'create', initialEvent = null, onSucc
   } = useForm({
     resolver: zodResolver(eventFormSchema),
     defaultValues,
+  })
+
+  const {
+    fields: questionFields,
+    append: appendQuestion,
+    remove: removeQuestion,
+  } = useFieldArray({
+    control,
+    name: 'registrationQuestions',
   })
 
   useEffect(() => {
@@ -174,6 +196,7 @@ export default function EventForm({ mode = 'create', initialEvent = null, onSucc
       setValue('locationLat', first.lat, { shouldValidate: true, shouldDirty: true })
       setValue('locationLng', first.lng, { shouldValidate: true, shouldDirty: true })
     } catch {
+      return
     }
   }
 
@@ -457,6 +480,94 @@ export default function EventForm({ mode = 'create', initialEvent = null, onSucc
               <FormError error={errors.capacityLimit} />
             </div>
           ) : null}
+
+          <div className="space-y-3 pt-2">
+            <div className="flex items-center justify-between">
+              <Label>Custom Registration Questions</Label>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  appendQuestion({
+                    questionText: '',
+                    questionType: 'text',
+                    optionsText: '',
+                    isRequired: false,
+                  })
+                }
+              >
+                <Plus className="mr-2 h-4 w-4" />
+                Add Question
+              </Button>
+            </div>
+
+            {questionFields.length ? (
+              <div className="space-y-3">
+                {questionFields.map((field, index) => {
+                  const type = watch(`registrationQuestions.${index}.questionType`)
+                  return (
+                    <div key={field.id} className="space-y-3 rounded-md border p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm font-medium">Question {index + 1}</p>
+                        <Button type="button" variant="ghost" size="sm" onClick={() => removeQuestion(index)}>
+                          <Trash2 className="mr-1 h-4 w-4" />
+                          Remove
+                        </Button>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor={`registrationQuestions.${index}.questionText`}>Question</Label>
+                        <Input
+                          id={`registrationQuestions.${index}.questionText`}
+                          placeholder="e.g. Dietary preferences"
+                          {...register(`registrationQuestions.${index}.questionText`)}
+                        />
+                        <FormError error={errors.registrationQuestions?.[index]?.questionText} />
+                      </div>
+
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label htmlFor={`registrationQuestions.${index}.questionType`}>Type</Label>
+                          <select
+                            id={`registrationQuestions.${index}.questionType`}
+                            className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                            {...register(`registrationQuestions.${index}.questionType`)}
+                          >
+                            <option value="text">Text</option>
+                            <option value="multiple_choice">Multiple Choice</option>
+                            <option value="checkbox">Checkbox</option>
+                          </select>
+                        </div>
+
+                        <label className="mt-6 inline-flex items-center gap-2 text-sm">
+                          <input type="checkbox" {...register(`registrationQuestions.${index}.isRequired`)} />
+                          Required
+                        </label>
+                      </div>
+
+                      {type !== 'text' ? (
+                        <div className="space-y-2">
+                          <Label htmlFor={`registrationQuestions.${index}.optionsText`}>Options</Label>
+                          <textarea
+                            id={`registrationQuestions.${index}.optionsText`}
+                            rows={4}
+                            placeholder={`Option 1\nOption 2`}
+                            className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                            {...register(`registrationQuestions.${index}.optionsText`)}
+                          />
+                          <p className="text-xs text-muted-foreground">One option per line.</p>
+                          <FormError error={errors.registrationQuestions?.[index]?.optionsText} />
+                        </div>
+                      ) : null}
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">No custom questions added.</p>
+            )}
+          </div>
         </CardContent>
       </Card>
 

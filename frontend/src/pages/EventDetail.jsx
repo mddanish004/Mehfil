@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { CalendarDays, Clock, Globe, Loader2, MapPin, Pencil, Trash2 } from 'lucide-react'
+import { CalendarDays, Clock, Globe, Loader2, MapPin, Pencil, Trash2, UserPlus } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/button'
@@ -53,6 +53,9 @@ function EventDetail() {
     if (!user || !event) return false
     return user.id === event.creatorId
   }, [user, event])
+
+  const registrationStatus = event?.viewerRegistration?.status || null
+  const canRegister = !canManage && event?.status === 'published'
 
   async function handleCancelEvent() {
     if (!window.confirm('Cancel this event? Attendees will see it as cancelled.')) {
@@ -107,6 +110,14 @@ function EventDetail() {
           ← Back to Home
         </Link>
         <div className="flex items-center gap-2">
+          {canRegister ? (
+            <Button asChild>
+              <Link to={`/events/${event.shortId}/register`}>
+                <UserPlus className="mr-2 h-4 w-4" />
+                {registrationStatus ? `Status: ${registrationStatus}` : 'Register'}
+              </Link>
+            </Button>
+          ) : null}
           {canManage ? (
             <>
               <Button variant="outline" asChild>
@@ -132,6 +143,11 @@ function EventDetail() {
           <p className="text-sm text-muted-foreground">
             Hosted by {event.creator?.name || 'Unknown host'} • Status: <span className="capitalize">{event.status}</span>
           </p>
+          {registrationStatus ? (
+            <p className="mt-2 text-sm text-muted-foreground">
+              Your registration status: <span className="capitalize font-medium">{registrationStatus}</span>
+            </p>
+          ) : null}
         </CardHeader>
         <CardContent className="space-y-6">
           {event.photoUrl ? (

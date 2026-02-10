@@ -11,6 +11,8 @@ import ProtectedRoute from '@/components/ProtectedRoute'
 import CreateEvent from '@/pages/CreateEvent'
 import EditEvent from '@/pages/EditEvent'
 import EventDetail from '@/pages/EventDetail'
+import EventRegistration from '@/pages/EventRegistration'
+import GuestProfile from '@/pages/GuestProfile'
 
 function App() {
   return (
@@ -19,7 +21,9 @@ function App() {
         <Route path="/" element={<Home />} />
         <Route path="/create-event" element={<ProtectedRoute><CreateEvent /></ProtectedRoute>} />
         <Route path="/events/:shortId" element={<EventDetail />} />
+        <Route path="/events/:shortId/register" element={<EventRegistration />} />
         <Route path="/events/:shortId/edit" element={<ProtectedRoute><EditEvent /></ProtectedRoute>} />
+        <Route path="/guest/profile" element={<GuestProfile />} />
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
         <Route path="/verify-email" element={<VerifyEmail />} />

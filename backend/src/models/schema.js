@@ -27,6 +27,7 @@ export const hostRoleEnum = pgEnum('host_role', ['creator', 'co_host'])
 export const registrationStatusEnum = pgEnum('registration_status', [
   'pending',
   'approved',
+  'registered',
   'rejected',
   'cancelled',
 ])
@@ -39,6 +40,11 @@ export const paymentStatusEnum = pgEnum('payment_status', [
 ])
 
 export const questionTypeEnum = pgEnum('question_type', ['text', 'multiple_choice', 'checkbox'])
+
+export const verificationPurposeEnum = pgEnum('verification_purpose', [
+  'account',
+  'event_registration',
+])
 
 export const paymentGatewayStatusEnum = pgEnum('payment_gateway_status', [
   'pending',
@@ -139,6 +145,8 @@ export const registrations = pgTable(
     paymentStatus: paymentStatusEnum('payment_status').notNull().default('not_required'),
     paymentId: varchar('payment_id', { length: 255 }),
     registrationResponses: jsonb('registration_responses'),
+    emailVerified: boolean('email_verified').notNull().default(false),
+    emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -191,13 +199,21 @@ export const emailVerifications = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     email: varchar('email', { length: 255 }).notNull(),
+    purpose: verificationPurposeEnum('purpose').notNull().default('account'),
+    eventId: uuid('event_id').references(() => events.id, { onDelete: 'cascade' }),
+    registrationId: uuid('registration_id').references(() => registrations.id, {
+      onDelete: 'cascade',
+    }),
     otp: varchar('otp', { length: 10 }).notNull(),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     verified: boolean('verified').notNull().default(false),
     attempts: integer('attempts').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [index('idx_email_verifications_email').on(table.email)]
+  (table) => [
+    index('idx_email_verifications_email').on(table.email),
+    index('idx_email_verifications_context').on(table.email, table.purpose, table.eventId),
+  ]
 )
 
 export const refreshTokens = pgTable(

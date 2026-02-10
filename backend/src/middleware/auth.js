@@ -1,6 +1,22 @@
 import jwt from 'jsonwebtoken'
 import env from '../config/env.js'
 
+function parseGuestToken(token) {
+  if (!token) {
+    return null
+  }
+
+  try {
+    const payload = jwt.verify(token, env.JWT_SECRET)
+    if (payload?.type === 'guest' && typeof payload.email === 'string') {
+      return { email: payload.email.toLowerCase() }
+    }
+  } catch {
+  }
+
+  return null
+}
+
 function requireAuth(req, res, next) {
   const token = req.cookies?.access_token
 
@@ -26,6 +42,7 @@ function requireAuth(req, res, next) {
 function optionalAuth(req, _res, next) {
   const token = req.cookies?.access_token
   if (!token) {
+    req.guest = parseGuestToken(req.cookies?.guest_token)
     return next()
   }
 
@@ -34,6 +51,7 @@ function optionalAuth(req, _res, next) {
     req.user = { id: payload.userId, email: payload.email }
   } catch {
   }
+  req.guest = parseGuestToken(req.cookies?.guest_token)
   next()
 }
 

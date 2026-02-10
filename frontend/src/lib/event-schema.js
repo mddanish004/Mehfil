@@ -27,6 +27,17 @@ const eventFormSchema = z
     capacityType: z.enum(['unlimited', 'limited']).default('unlimited'),
     capacityLimit: z.coerce.number().int().min(1).max(100000).optional().nullable(),
     status: z.enum(['draft', 'published', 'cancelled']).default('draft'),
+    registrationQuestions: z
+      .array(
+        z.object({
+          questionText: z.string().trim().min(1, 'Question text is required').max(500),
+          questionType: z.enum(['text', 'multiple_choice', 'checkbox']),
+          optionsText: z.string().default(''),
+          isRequired: z.boolean().default(false),
+        })
+      )
+      .max(20)
+      .default([]),
   })
   .superRefine((data, ctx) => {
     const start = new Date(data.startDatetime)
@@ -79,6 +90,25 @@ const eventFormSchema = z
         message: 'Capacity limit is required for limited events',
       })
     }
+
+    data.registrationQuestions.forEach((question, index) => {
+      if (question.questionType === 'text') {
+        return
+      }
+
+      const options = question.optionsText
+        .split('\n')
+        .map((item) => item.trim())
+        .filter(Boolean)
+
+      if (options.length < 2) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['registrationQuestions', index, 'optionsText'],
+          message: 'Add at least 2 options for this question',
+        })
+      }
+    })
   })
 
 function getDefaultEventFormValues() {
@@ -100,6 +130,7 @@ function getDefaultEventFormValues() {
     capacityType: 'unlimited',
     capacityLimit: null,
     status: 'draft',
+    registrationQuestions: [],
   }
 }
 
@@ -122,6 +153,14 @@ function toEventFormValues(event) {
     capacityType: event.capacityType || 'unlimited',
     capacityLimit: event.capacityLimit || null,
     status: event.status || 'draft',
+    registrationQuestions: Array.isArray(event.registrationQuestions)
+      ? event.registrationQuestions.map((question) => ({
+          questionText: question.questionText || '',
+          questionType: question.questionType || 'text',
+          optionsText: Array.isArray(question.options) ? question.options.join('\n') : '',
+          isRequired: Boolean(question.isRequired),
+        }))
+      : [],
   }
 }
 

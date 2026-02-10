@@ -2,6 +2,7 @@ import {
   signup,
   login,
   createSession,
+  createGuestSession,
   refreshSession,
   logout,
   verifyEmail,
@@ -9,9 +10,9 @@ import {
   forgotPassword,
   resetPassword,
   getMe,
-  sanitizeUser,
 } from '../services/auth.service.js'
 import env from '../config/env.js'
+import { getGuestProfile } from '../services/registration.service.js'
 
 async function handleSignup(req, res, next) {
   try {
@@ -105,7 +106,7 @@ async function handleRefresh(req, res, next) {
 
 async function handleVerifyEmail(req, res, next) {
   try {
-    const { email, otp } = req.body
+    const { email, otp, purpose, shortId } = req.body
 
     if (!email || !otp) {
       return res.status(400).json({
@@ -114,12 +115,24 @@ async function handleVerifyEmail(req, res, next) {
       })
     }
 
-    const user = await verifyEmail({ email, otp })
-    await createSession(res, user)
+    const result = await verifyEmail({ email, otp, purpose, shortId })
+
+    if (result.type === 'event_registration') {
+      createGuestSession(res, result.guestEmail)
+      return res.json({
+        success: true,
+        data: {
+          registration: result.registration,
+        },
+        message: 'Registration email verified successfully',
+      })
+    }
+
+    await createSession(res, result.user)
 
     res.json({
       success: true,
-      data: { user },
+      data: { user: result.user },
       message: 'Email verified successfully',
     })
   } catch (error) {
@@ -129,7 +142,7 @@ async function handleVerifyEmail(req, res, next) {
 
 async function handleResendOTP(req, res, next) {
   try {
-    const { email } = req.body
+    const { email, purpose, shortId } = req.body
 
     if (!email) {
       return res.status(400).json({
@@ -138,11 +151,27 @@ async function handleResendOTP(req, res, next) {
       })
     }
 
-    const result = await resendOTP(email)
+    const result = await resendOTP({ email, purpose, shortId })
 
     res.json({
       success: true,
       message: result.message,
+    })
+  } catch (error) {
+    next(error)
+  }
+}
+
+async function handleGetGuestProfile(req, res, next) {
+  try {
+    const profile = await getGuestProfile({
+      userId: req.user?.id || null,
+      email: req.guest?.email || req.user?.email || null,
+    })
+
+    res.json({
+      success: true,
+      data: profile,
     })
   } catch (error) {
     next(error)
@@ -238,4 +267,5 @@ export {
   handleResetPassword,
   handleGoogleCallback,
   handleGetMe,
+  handleGetGuestProfile,
 }

@@ -1,7 +1,7 @@
 import bcrypt from 'bcrypt'
 import jwt from 'jsonwebtoken'
 import crypto from 'crypto'
-import { eq, and, gt } from 'drizzle-orm'
+import { and, desc, eq, gt } from 'drizzle-orm'
 import { db } from '../config/db.js'
 import {
   users,
@@ -16,6 +16,10 @@ import {
   sendPasswordResetEmail,
   sendWelcomeEmail,
 } from './email.service.js'
+import {
+  resendRegistrationOtp,
+  verifyRegistrationEmailOtp,
+} from './registration.service.js'
 
 const SALT_ROUNDS = 12
 
@@ -32,6 +36,14 @@ function generateRefreshToken(user) {
     { userId: user.id, tokenId: crypto.randomUUID() },
     env.JWT_REFRESH_SECRET,
     { expiresIn: env.JWT_REFRESH_EXPIRY }
+  )
+}
+
+function generateGuestToken(email) {
+  return jwt.sign(
+    { type: 'guest', email },
+    env.JWT_SECRET,
+    { expiresIn: '30d' }
   )
 }
 
@@ -56,6 +68,21 @@ function setTokenCookies(res, accessToken, refreshToken) {
 function clearTokenCookies(res) {
   res.clearCookie('access_token', { path: '/' })
   res.clearCookie('refresh_token', { path: '/' })
+  res.clearCookie('guest_token', { path: '/' })
+}
+
+function createGuestSession(res, email) {
+  const guestToken = generateGuestToken(email.toLowerCase())
+
+  res.cookie('guest_token', guestToken, {
+    httpOnly: true,
+    secure: env.NODE_ENV === 'production',
+    sameSite: env.NODE_ENV === 'production' ? 'strict' : 'lax',
+    maxAge: 30 * 24 * 60 * 60 * 1000,
+    path: '/',
+  })
+
+  return { guestToken }
 }
 
 function sanitizeUser(user) {
@@ -93,6 +120,7 @@ async function signup({ name, email, password }) {
 
   await db.insert(emailVerifications).values({
     email: email.toLowerCase(),
+    purpose: 'account',
     otp,
     expiresAt,
   })
@@ -204,18 +232,33 @@ async function logout(res, refreshToken) {
   }
 }
 
-async function verifyEmail({ email, otp }) {
+async function verifyEmail({ email, otp, purpose = 'account', shortId }) {
+  if (purpose === 'event_registration') {
+    if (!shortId) {
+      const err = new Error('Event shortId is required for registration verification')
+      err.statusCode = 400
+      throw err
+    }
+
+    const result = await verifyRegistrationEmailOtp({ shortId, email, otp })
+    return {
+      type: 'event_registration',
+      ...result,
+    }
+  }
+
   const [verification] = await db
     .select()
     .from(emailVerifications)
     .where(
       and(
         eq(emailVerifications.email, email.toLowerCase()),
+        eq(emailVerifications.purpose, 'account'),
         eq(emailVerifications.verified, false),
         gt(emailVerifications.expiresAt, new Date())
       )
     )
-    .orderBy(emailVerifications.createdAt)
+    .orderBy(desc(emailVerifications.createdAt))
     .limit(1)
 
   if (!verification) {
@@ -252,20 +295,38 @@ async function verifyEmail({ email, otp }) {
     .where(eq(users.email, email.toLowerCase()))
     .returning()
 
-  if (user) {
-    await sendWelcomeEmail(user.email, user.name)
+  if (!user) {
+    const err = new Error('User not found for this email')
+    err.statusCode = 404
+    throw err
   }
 
-  return sanitizeUser(user)
+  await sendWelcomeEmail(user.email, user.name)
+
+  return {
+    type: 'account',
+    user: sanitizeUser(user),
+  }
 }
 
-async function resendOTP(email) {
+async function resendOTP({ email, purpose = 'account', shortId }) {
+  if (purpose === 'event_registration') {
+    if (!shortId) {
+      const err = new Error('Event shortId is required for registration OTP resend')
+      err.statusCode = 400
+      throw err
+    }
+
+    return resendRegistrationOtp({ shortId, email })
+  }
+
   const recentCount = await db
     .select()
     .from(emailVerifications)
     .where(
       and(
         eq(emailVerifications.email, email.toLowerCase()),
+        eq(emailVerifications.purpose, 'account'),
         gt(emailVerifications.createdAt, new Date(Date.now() - 10 * 60 * 1000))
       )
     )
@@ -281,6 +342,7 @@ async function resendOTP(email) {
 
   await db.insert(emailVerifications).values({
     email: email.toLowerCase(),
+    purpose: 'account',
     otp,
     expiresAt,
   })
@@ -378,6 +440,7 @@ export {
   signup,
   login,
   createSession,
+  createGuestSession,
   refreshSession,
   logout,
   verifyEmail,
