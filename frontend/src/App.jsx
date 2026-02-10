@@ -13,6 +13,7 @@ import EditEvent from '@/pages/EditEvent'
 import EventDetail from '@/pages/EventDetail'
 import EventRegistration from '@/pages/EventRegistration'
 import GuestProfile from '@/pages/GuestProfile'
+import RegistrationTicket from '@/pages/RegistrationTicket'
 
 function App() {
   return (
@@ -23,6 +24,7 @@ function App() {
         <Route path="/events/:shortId" element={<EventDetail />} />
         <Route path="/events/:shortId/register" element={<EventRegistration />} />
         <Route path="/events/:shortId/edit" element={<ProtectedRoute><EditEvent /></ProtectedRoute>} />
+        <Route path="/registrations/:registrationId/ticket" element={<RegistrationTicket />} />
         <Route path="/guest/profile" element={<GuestProfile />} />
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />

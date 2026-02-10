@@ -134,9 +134,16 @@ function GuestProfile() {
                       {new Date(item.event.startDatetime).toLocaleString()} • {item.event.locationType === 'virtual' ? 'Virtual' : item.event.locationAddress || 'Location TBD'}
                     </p>
                   </div>
-                  <span className={`rounded-full px-2.5 py-1 text-xs font-medium capitalize ${getStatusClass(item.status)}`}>
-                    {item.status}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className={`rounded-full px-2.5 py-1 text-xs font-medium capitalize ${getStatusClass(item.status)}`}>
+                      {item.status}
+                    </span>
+                    {item.emailVerified && (item.status === 'approved' || item.status === 'registered') ? (
+                      <Button size="sm" variant="outline" asChild>
+                        <Link to={`/registrations/${item.registrationId}/ticket`}>Ticket</Link>
+                      </Button>
+                    ) : null}
+                  </div>
                 </div>
               ))}
             </div>

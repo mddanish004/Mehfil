@@ -138,10 +138,47 @@ function getStatusCopy(status) {
   }
 }
 
-async function sendRegistrationConfirmationEmail({ email, name, status, event }) {
+function getLocationText(event) {
+  if (event.locationType === 'virtual') {
+    return event.googleMeetLink || 'Virtual event'
+  }
+  return event.locationAddress || 'Location details will be shared by host'
+}
+
+function getTicketHtml(ticket) {
+  if (!ticket) {
+    return ''
+  }
+
+  return `
+    <div style="margin-top:22px;border:1px solid #e4e4e7;border-radius:10px;padding:16px;background:#ffffff">
+      <p style="margin:0 0 8px;color:#111;font-weight:600">Your QR Ticket</p>
+      <div style="background:#fff;border:1px solid #111;border-radius:8px;display:inline-block;padding:10px">
+        <img src="${ticket.qrDataUrl}" alt="Ticket QR Code" style="display:block;width:220px;height:220px;background:#fff" />
+      </div>
+      <p style="margin:10px 0 0;color:#666;font-size:13px">Ticket ID: ${ticket.ticket.registrationId}</p>
+      <p style="margin:6px 0 0;color:#666;font-size:13px">A PDF ticket is attached for offline use.</p>
+    </div>
+  `
+}
+
+async function sendRegistrationConfirmationEmail({ email, name, status, event, ticket = null }) {
   const statusCopy = getStatusCopy(status)
   const icsContent = buildEventIcs(event)
   const eventUrl = `${env.CLIENT_URL}/events/${event.shortId}`
+  const attachments = [
+    {
+      filename: `${event.shortId}.ics`,
+      content: Buffer.from(icsContent).toString('base64'),
+    },
+  ]
+
+  if (ticket?.pdfBuffer) {
+    attachments.push({
+      filename: `ticket-${ticket.ticket.registrationId}.pdf`,
+      content: ticket.pdfBuffer.toString('base64'),
+    })
+  }
 
   return sendEmail({
     to: email,
@@ -153,20 +190,16 @@ async function sendRegistrationConfirmationEmail({ email, name, status, event })
         <div style="background:#f4f4f5;border-radius:8px;padding:16px;margin:20px 0">
           <p style="margin:0 0 8px;color:#111;font-weight:600">${event.name}</p>
           <p style="margin:0;color:#555;font-size:14px">${new Date(event.startDatetime).toLocaleString()} - ${new Date(event.endDatetime).toLocaleString()}</p>
-          <p style="margin:8px 0 0;color:#555;font-size:14px">${event.locationType === 'virtual' ? event.googleMeetLink || 'Virtual event' : event.locationAddress || 'Location details will be shared by host'}</p>
+          <p style="margin:8px 0 0;color:#555;font-size:14px">${getLocationText(event)}</p>
         </div>
+        ${getTicketHtml(ticket)}
         <div style="margin-top:20px">
           <a href="${eventUrl}" style="display:inline-block;background:#111;color:#fff;padding:12px 18px;border-radius:6px;text-decoration:none;font-weight:600;font-size:14px">View Event</a>
         </div>
         <p style="color:#888;font-size:12px;margin-top:20px">A calendar invite is attached as an .ics file.</p>
       </div>
     `,
-    attachments: [
-      {
-        filename: `${event.shortId}.ics`,
-        content: Buffer.from(icsContent).toString('base64'),
-      },
-    ],
+    attachments,
   })
 }
 

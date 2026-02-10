@@ -99,6 +99,9 @@ function EventRegistration() {
 
   const questions = useMemo(() => event?.registrationQuestions || [], [event])
   const status = registration?.status || null
+  const canViewTicket =
+    registration?.emailVerified &&
+    (registration?.status === 'approved' || registration?.status === 'registered')
 
   function onFieldChange(key, value) {
     setForm((previous) => ({
@@ -370,6 +373,11 @@ function EventRegistration() {
                   <Button asChild>
                     <Link to="/guest/profile">View Guest Profile</Link>
                   </Button>
+                  {canViewTicket ? (
+                    <Button variant="outline" asChild>
+                      <Link to={`/registrations/${registration.id}/ticket`}>View Ticket</Link>
+                    </Button>
+                  ) : null}
                   <Button variant="outline" asChild>
                     <Link to={`/events/${shortId}`}>Back to Event</Link>
                   </Button>

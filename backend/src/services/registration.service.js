@@ -13,6 +13,11 @@ import {
   sendRegistrationConfirmationEmail,
   sendRegistrationVerificationOTP,
 } from './email.service.js'
+import {
+  createTicketData,
+  ensureRegistrationQrCode,
+  isTicketEligible,
+} from './ticket.service.js'
 
 const ACTIVE_REGISTRATION_STATUSES = ['pending', 'approved', 'registered']
 
@@ -301,6 +306,26 @@ async function createRegistrationOtp({ email, eventId, eventName, registrationId
   })
 }
 
+async function sendRegistrationStatusEmail({ registration, event }) {
+  let ticket = null
+
+  if (event.locationType === 'physical' && isTicketEligible(registration)) {
+    ticket = await createTicketData({
+      registration,
+      event,
+      includePdf: true,
+    })
+  }
+
+  await sendRegistrationConfirmationEmail({
+    email: registration.email,
+    name: registration.name,
+    status: registration.status,
+    event,
+    ticket,
+  })
+}
+
 async function registerForEvent({ shortId, payload, viewerUser = null }) {
   assertDb()
 
@@ -331,8 +356,14 @@ async function registerForEvent({ shortId, payload, viewerUser = null }) {
     existingRegistration.emailVerified &&
     ACTIVE_REGISTRATION_STATUSES.includes(existingRegistration.status)
   ) {
+    const qrCode = await ensureRegistrationQrCode(existingRegistration)
+    const registrationWithQr = {
+      ...existingRegistration,
+      qrCode,
+    }
+
     return {
-      registration: serializeRegistration(existingRegistration, event),
+      registration: serializeRegistration(registrationWithQr, event),
       verificationRequired: false,
       alreadyRegistered: true,
     }
@@ -386,6 +417,12 @@ async function registerForEvent({ shortId, payload, viewerUser = null }) {
       .returning()
 
     registration = created
+  }
+
+  const qrCode = await ensureRegistrationQrCode(registration)
+  registration = {
+    ...registration,
+    qrCode,
   }
 
   await createRegistrationOtp({
@@ -553,15 +590,19 @@ async function verifyRegistrationEmailOtp({ shortId, email, otp }) {
     .where(eq(registrations.id, registration.id))
     .returning()
 
-  await sendRegistrationConfirmationEmail({
-    email: updatedRegistration.email,
-    name: updatedRegistration.name,
-    status: updatedRegistration.status,
+  const qrCode = await ensureRegistrationQrCode(updatedRegistration)
+  const registrationWithQr = {
+    ...updatedRegistration,
+    qrCode,
+  }
+
+  await sendRegistrationStatusEmail({
+    registration: registrationWithQr,
     event,
   })
 
   return {
-    registration: serializeRegistration(updatedRegistration, event),
+    registration: serializeRegistration(registrationWithQr, event),
     guestEmail: updatedRegistration.email,
   }
 }
@@ -622,14 +663,18 @@ async function approveRegistrationById({ registrationId, userId }) {
     .where(eq(registrations.id, row.registration.id))
     .returning()
 
-  await sendRegistrationConfirmationEmail({
-    email: updatedRegistration.email,
-    name: updatedRegistration.name,
-    status: updatedRegistration.status,
+  const qrCode = await ensureRegistrationQrCode(updatedRegistration)
+  const registrationWithQr = {
+    ...updatedRegistration,
+    qrCode,
+  }
+
+  await sendRegistrationStatusEmail({
+    registration: registrationWithQr,
     event: row.event,
   })
 
-  return serializeRegistration(updatedRegistration, row.event)
+  return serializeRegistration(registrationWithQr, row.event)
 }
 
 async function getGuestProfile({ userId = null, email = null }) {
