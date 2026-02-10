@@ -1,16 +1,20 @@
-import { and, asc, desc, eq, gte, ilike, inArray, lte, or, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gte, ilike, lte, or, sql } from 'drizzle-orm'
 import { db } from '../config/db.js'
 import {
   events,
   eventHosts,
   eventUpdates,
-  payments,
   registrationQuestions,
   registrations,
   users,
 } from '../models/schema.js'
 import { generateShortId } from '../utils/shortId.js'
 import { generateZoomMeetingLink } from './zoom.service.js'
+import {
+  calculatePaymentBreakdown,
+  serializePaymentBreakdown,
+} from './payment-pricing.service.js'
+import { refundRegistrationPaymentByRegistrationId } from './payment.service.js'
 
 function assertDb() {
   if (!db) {
@@ -119,12 +123,17 @@ function normalizeRegistrationQuestions(questions) {
 }
 
 function serializeEvent(event) {
+  const ticketPrice = toNumber(event.ticketPrice, 0)
+
   return {
     ...event,
-    ticketPrice: toNumber(event.ticketPrice, 0),
+    ticketPrice,
     locationLat: event.locationLat === null ? null : Number(event.locationLat),
     locationLng: event.locationLng === null ? null : Number(event.locationLng),
     zoomMeetingLink: event.googleMeetLink || null,
+    paymentBreakdown: event.isPaid
+      ? serializePaymentBreakdown(calculatePaymentBreakdown(ticketPrice))
+      : null,
   }
 }
 
@@ -505,6 +514,8 @@ async function getViewerRegistrationForEvent(eventId, viewer = {}) {
       email: registrations.email,
       name: registrations.name,
       status: registrations.status,
+      paymentStatus: registrations.paymentStatus,
+      paymentId: registrations.paymentId,
       emailVerified: registrations.emailVerified,
       emailVerifiedAt: registrations.emailVerifiedAt,
       createdAt: registrations.createdAt,
@@ -524,6 +535,8 @@ async function getViewerRegistrationForEvent(eventId, viewer = {}) {
     email: row.email,
     name: row.name,
     status: row.status,
+    paymentStatus: row.paymentStatus,
+    paymentId: row.paymentId,
     emailVerified: Boolean(row.emailVerified),
     emailVerifiedAt: row.emailVerifiedAt,
     createdAt: row.createdAt,
@@ -815,7 +828,7 @@ async function cancelEventByShortId({ shortId, userId, refundMode = 'none' }) {
     .where(eq(events.id, current.id))
     .returning()
 
-  const [activeRegistrations, refundablePayments] = await Promise.all([
+  const [activeRegistrations, refundableRegistrations] = await Promise.all([
     db
       .update(registrations)
       .set({
@@ -832,44 +845,68 @@ async function cancelEventByShortId({ shortId, userId, refundMode = 'none' }) {
           )
         )
       )
-      .returning({ id: registrations.id }),
+      .returning({
+        id: registrations.id,
+        paymentStatus: registrations.paymentStatus,
+      }),
     refundMode === 'full'
       ? db
           .select({
-            id: payments.id,
-            registrationId: registrations.id,
+            id: registrations.id,
           })
-          .from(payments)
-          .innerJoin(registrations, eq(payments.registrationId, registrations.id))
-          .where(and(eq(registrations.eventId, current.id), eq(payments.status, 'completed')))
+          .from(registrations)
+          .where(
+            and(
+              eq(registrations.eventId, current.id),
+              eq(registrations.paymentStatus, 'completed')
+            )
+          )
       : Promise.resolve([]),
   ])
 
-  if (refundMode === 'full' && refundablePayments.length) {
-    const paymentIds = refundablePayments.map((row) => row.id)
-    const registrationIds = [...new Set(refundablePayments.map((row) => row.registrationId))]
+  let refundedPayments = 0
+  let refundPending = 0
+  let refundFailures = 0
 
-    await Promise.all([
-      db
-        .update(payments)
-        .set({
-          status: 'refunded',
-          updatedAt: now,
+  if (refundMode === 'full' && refundableRegistrations.length) {
+    const outcomes = await Promise.allSettled(
+      refundableRegistrations.map((item) =>
+        refundRegistrationPaymentByRegistrationId({
+          registrationId: item.id,
+          reason: 'Event cancelled by host',
+          metadata: {
+            source: 'event_cancellation',
+            event_id: current.id,
+            registration_id: item.id,
+          },
         })
-        .where(inArray(payments.id, paymentIds)),
-      db
-        .update(registrations)
-        .set({
-          paymentStatus: 'refunded',
-          updatedAt: now,
-        })
-        .where(inArray(registrations.id, registrationIds)),
-    ])
+      )
+    )
+
+    for (const outcome of outcomes) {
+      if (outcome.status !== 'fulfilled') {
+        refundFailures += 1
+        continue
+      }
+
+      if (outcome.value.refunded) {
+        refundedPayments += 1
+        continue
+      }
+
+      if (outcome.value.pending) {
+        refundPending += 1
+      } else {
+        refundFailures += 1
+      }
+    }
   }
 
   const refundSummary = {
     refundMode,
-    refundedPayments: refundMode === 'full' ? refundablePayments.length : 0,
+    refundedPayments,
+    pendingRefunds: refundPending,
+    failedRefunds: refundFailures,
     cancelledRegistrations: activeRegistrations.length,
   }
 

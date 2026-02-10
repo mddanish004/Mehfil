@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { getEventByShortId, registerForEvent } from '@/lib/events-api'
+import { confirmPayment, createPayment } from '@/lib/payments-api'
 
 function getErrorMessage(error) {
   return error?.response?.data?.error?.message || error?.message || 'Something went wrong'
@@ -30,6 +31,15 @@ function getStatusClass(status) {
   return 'bg-amber-100 text-amber-700'
 }
 
+function formatMoney(amount, currency = 'USD') {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(Number(amount || 0))
+}
+
 function EventRegistration() {
   const { shortId } = useParams()
   const navigate = useNavigate()
@@ -38,6 +48,9 @@ function EventRegistration() {
   const [loadingEvent, setLoadingEvent] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [verifying, setVerifying] = useState(false)
+  const [creatingPayment, setCreatingPayment] = useState(false)
+  const [confirmingPayment, setConfirmingPayment] = useState(false)
+  const [autoPaymentCheckDone, setAutoPaymentCheckDone] = useState(false)
   const [registration, setRegistration] = useState(null)
   const [otp, setOtp] = useState('')
   const [resendCooldown, setResendCooldown] = useState(0)
@@ -86,6 +99,10 @@ function EventRegistration() {
   }, [shortId])
 
   useEffect(() => {
+    setAutoPaymentCheckDone(false)
+  }, [shortId])
+
+  useEffect(() => {
     if (resendCooldown <= 0) {
       return undefined
     }
@@ -98,9 +115,18 @@ function EventRegistration() {
   }, [resendCooldown])
 
   const questions = useMemo(() => event?.registrationQuestions || [], [event])
+  const paymentBreakdown = useMemo(() => event?.paymentBreakdown || null, [event])
   const status = registration?.status || null
+  const isPaidEvent = Boolean(event?.isPaid)
+  const paymentCompleted = !isPaidEvent || registration?.paymentStatus === 'completed'
+  const needsPayment =
+    Boolean(registration?.emailVerified) &&
+    isPaidEvent &&
+    registration?.paymentStatus !== 'completed' &&
+    !['cancelled', 'rejected'].includes(registration?.status)
   const canViewTicket =
     registration?.emailVerified &&
+    paymentCompleted &&
     (registration?.status === 'approved' || registration?.status === 'registered')
 
   function onFieldChange(key, value) {
@@ -174,7 +200,11 @@ function EventRegistration() {
         shortId,
       })
       setRegistration(result.data.registration)
-      toast.success('Email verified successfully')
+      if (event?.isPaid && result.data.registration?.paymentStatus !== 'completed') {
+        toast.success('Email verified. Complete payment to finish registration.')
+      } else {
+        toast.success('Email verified successfully')
+      }
     } catch (error) {
       toast.error(getErrorMessage(error))
     } finally {
@@ -195,6 +225,110 @@ function EventRegistration() {
       toast.error(getErrorMessage(error))
     }
   }
+
+  const handleCreatePayment = useCallback(async () => {
+    if (!registration?.id) {
+      return
+    }
+
+    setCreatingPayment(true)
+    try {
+      const result = await createPayment({
+        registrationId: registration.id,
+      })
+
+      if (result.registration) {
+        setRegistration(result.registration)
+      }
+
+      if (result.alreadyPaid) {
+        toast.success('Payment already completed')
+        return
+      }
+
+      if (!result.checkoutUrl) {
+        toast.error('Unable to start checkout')
+        return
+      }
+
+      window.location.assign(result.checkoutUrl)
+    } catch (error) {
+      toast.error(getErrorMessage(error))
+    } finally {
+      setCreatingPayment(false)
+    }
+  }, [registration?.id])
+
+  const handleConfirmPayment = useCallback(async ({ silent = false, clearParams = false } = {}) => {
+    if (!registration?.id) {
+      return
+    }
+
+    const params = new URLSearchParams(window.location.search)
+    const paymentId = params.get('payment_id') || params.get('paymentId') || null
+    const checkoutSessionId =
+      params.get('checkout_session_id') || params.get('session_id') || null
+
+    setConfirmingPayment(true)
+    try {
+      const result = await confirmPayment({
+        registrationId: registration.id,
+        paymentId: paymentId || undefined,
+        checkoutSessionId: checkoutSessionId || undefined,
+      })
+
+      if (result.registration) {
+        setRegistration(result.registration)
+      }
+
+      const paymentStatus = result.payment?.status
+      if (!silent) {
+        if (paymentStatus === 'completed') {
+          toast.success('Payment completed')
+        } else if (paymentStatus === 'failed') {
+          toast.error('Payment failed. Please try again.')
+        } else {
+          toast.message('Payment is still processing')
+        }
+      }
+
+      if (clearParams && (paymentId || checkoutSessionId)) {
+        const cleanUrl = window.location.pathname
+        window.history.replaceState({}, '', cleanUrl)
+      }
+    } catch (error) {
+      if (!silent) {
+        toast.error(getErrorMessage(error))
+      }
+    } finally {
+      setConfirmingPayment(false)
+    }
+  }, [registration?.id])
+
+  useEffect(() => {
+    if (!isPaidEvent || !registration?.id || registration?.paymentStatus === 'completed') {
+      return
+    }
+
+    if (autoPaymentCheckDone) {
+      return
+    }
+
+    const params = new URLSearchParams(window.location.search)
+    const hasGatewayParams =
+      params.has('payment_id') ||
+      params.has('paymentId') ||
+      params.has('checkout_session_id') ||
+      params.has('session_id') ||
+      params.has('status')
+
+    if (!hasGatewayParams) {
+      return
+    }
+
+    setAutoPaymentCheckDone(true)
+    handleConfirmPayment({ silent: true, clearParams: true })
+  }, [autoPaymentCheckDone, handleConfirmPayment, isPaidEvent, registration?.id, registration?.paymentStatus])
 
   if (loadingEvent) {
     return (
@@ -362,27 +496,57 @@ function EventRegistration() {
             ) : null}
 
             {registration && registration.emailVerified ? (
-              <div className="space-y-3 rounded-md border p-4">
-                <p className="text-sm">
-                  Registration status:{' '}
-                  <span className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${getStatusClass(registration.status)}`}>
-                    {formatStatus(registration.status)}
-                  </span>
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  <Button asChild>
-                    <Link to="/guest/profile">View Guest Profile</Link>
-                  </Button>
-                  {canViewTicket ? (
-                    <Button variant="outline" asChild>
-                      <Link to={`/registrations/${registration.id}/ticket`}>View Ticket</Link>
+              <>
+                {isPaidEvent ? (
+                  <div className="space-y-3 rounded-md border p-4">
+                    <p className="text-sm">
+                      Payment status:{' '}
+                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${registration.paymentStatus === 'completed' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                        {formatStatus(registration.paymentStatus || 'pending')}
+                      </span>
+                    </p>
+                    {needsPayment ? (
+                      <>
+                        <div className="flex flex-wrap gap-2">
+                          <Button type="button" onClick={handleCreatePayment} disabled={creatingPayment}>
+                            {creatingPayment ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                            Pay with Dodo
+                          </Button>
+                          <Button type="button" variant="outline" onClick={() => handleConfirmPayment()} disabled={confirmingPayment}>
+                            {confirmingPayment ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                            Check Payment Status
+                          </Button>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          Card details are handled on Dodo Payments checkout and are not stored by Mehfil.
+                        </p>
+                      </>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                <div className="space-y-3 rounded-md border p-4">
+                  <p className="text-sm">
+                    Registration status:{' '}
+                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${getStatusClass(registration.status)}`}>
+                      {formatStatus(registration.status)}
+                    </span>
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button asChild>
+                      <Link to="/guest/profile">View Guest Profile</Link>
                     </Button>
-                  ) : null}
-                  <Button variant="outline" asChild>
-                    <Link to={`/events/${shortId}`}>Back to Event</Link>
-                  </Button>
+                    {canViewTicket ? (
+                      <Button variant="outline" asChild>
+                        <Link to={`/registrations/${registration.id}/ticket`}>View Ticket</Link>
+                      </Button>
+                    ) : null}
+                    <Button variant="outline" asChild>
+                      <Link to={`/events/${shortId}`}>Back to Event</Link>
+                    </Button>
+                  </div>
                 </div>
-              </div>
+              </>
             ) : null}
           </CardContent>
         </Card>
@@ -397,7 +561,16 @@ function EventRegistration() {
           <p><span className="text-muted-foreground">Date:</span> {new Date(event.startDatetime).toLocaleString()}</p>
           <p><span className="text-muted-foreground">Timezone:</span> {event.timezone}</p>
           <p><span className="text-muted-foreground">Location:</span> {event.locationType === 'virtual' ? 'Virtual' : event.locationAddress || 'TBD'}</p>
-          <p><span className="text-muted-foreground">Approval:</span> {event.requireApproval ? 'Pending approval after verification' : 'Auto-approved after verification'}</p>
+          <p><span className="text-muted-foreground">Approval:</span> {event.requireApproval ? (event.isPaid ? 'Pending approval after payment' : 'Pending approval after verification') : (event.isPaid ? 'Auto-approved after payment' : 'Auto-approved after verification')}</p>
+          {event.isPaid ? (
+            <div className="rounded-md border p-3">
+              <p className="mb-2 text-sm font-medium">Price Breakdown</p>
+              <p><span className="text-muted-foreground">Ticket:</span> {formatMoney(paymentBreakdown?.ticketAmount || event.ticketPrice || 0, paymentBreakdown?.currency || 'USD')}</p>
+              <p><span className="text-muted-foreground">Platform fee:</span> {formatMoney(paymentBreakdown?.platformFee || 0, paymentBreakdown?.currency || 'USD')}</p>
+              <p><span className="text-muted-foreground">Processing fee:</span> {formatMoney(paymentBreakdown?.processingFee || 0, paymentBreakdown?.currency || 'USD')}</p>
+              <p className="mt-1 font-medium"><span className="text-muted-foreground">Total:</span> {formatMoney(paymentBreakdown?.totalAmount || event.ticketPrice || 0, paymentBreakdown?.currency || 'USD')}</p>
+            </div>
+          ) : null}
           <Button variant="ghost" onClick={() => navigate(`/events/${shortId}`)}>
             View Event Details
           </Button>

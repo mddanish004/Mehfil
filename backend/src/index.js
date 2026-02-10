@@ -7,6 +7,7 @@ import passport from './config/passport.js'
 import env from './config/env.js'
 import routes from './routes/index.js'
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js'
+import { handlePaymentWebhook } from './controllers/payment.controller.js'
 
 const app = express()
 
@@ -47,6 +48,8 @@ const authLimiter = rateLimit({
   },
 })
 app.use('/api/auth', authLimiter)
+
+app.post('/api/payments/webhook', express.raw({ type: 'application/json' }), handlePaymentWebhook)
 
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true }))

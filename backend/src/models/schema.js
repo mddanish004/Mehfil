@@ -256,16 +256,24 @@ export const payments = pgTable(
       .notNull()
       .references(() => registrations.id, { onDelete: 'cascade' }),
     amount: decimal('amount', { precision: 10, scale: 2 }).notNull(),
+    ticketAmount: decimal('ticket_amount', { precision: 10, scale: 2 }).notNull().default('0'),
+    platformFee: decimal('platform_fee', { precision: 10, scale: 2 }).notNull().default('0'),
+    processingFee: decimal('processing_fee', { precision: 10, scale: 2 }).notNull().default('0'),
     currency: varchar('currency', { length: 10 }).notNull().default('USD'),
     paymentGatewayId: varchar('payment_gateway_id', { length: 255 }),
+    checkoutSessionId: varchar('checkout_session_id', { length: 255 }),
+    refundGatewayId: varchar('refund_gateway_id', { length: 255 }),
     status: paymentGatewayStatusEnum('status').notNull().default('pending'),
     paymentMethod: varchar('payment_method', { length: 100 }),
+    receiptSentAt: timestamp('receipt_sent_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index('idx_payments_registration').on(table.registrationId),
     index('idx_payments_status').on(table.status),
+    index('idx_payments_gateway').on(table.paymentGatewayId),
+    index('idx_payments_checkout_session').on(table.checkoutSessionId),
   ]
 )
 

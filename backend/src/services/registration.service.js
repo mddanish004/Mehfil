@@ -4,7 +4,6 @@ import {
   emailVerifications,
   eventHosts,
   events,
-  payments,
   registrationQuestions,
   registrations,
   users,
@@ -19,6 +18,7 @@ import {
   ensureRegistrationQrCode,
   isTicketEligible,
 } from './ticket.service.js'
+import { refundRegistrationPaymentByRegistrationId } from './payment.service.js'
 
 const ACTIVE_REGISTRATION_STATUSES = ['pending', 'approved', 'registered']
 
@@ -218,6 +218,8 @@ function serializeRegistration(registration, event) {
     phone: registration.phone,
     socialProfileLink: registration.socialProfileLink,
     status: registration.status,
+    paymentStatus: registration.paymentStatus,
+    paymentId: registration.paymentId,
     emailVerified: Boolean(registration.emailVerified),
     emailVerifiedAt: registration.emailVerifiedAt,
     registrationResponses: registration.registrationResponses || [],
@@ -310,7 +312,7 @@ async function createRegistrationOtp({ email, eventId, eventName, registrationId
 async function sendRegistrationStatusEmail({ registration, event }) {
   let ticket = null
 
-  if (event.locationType === 'physical' && isTicketEligible(registration)) {
+  if (event.locationType === 'physical' && isTicketEligible(registration, event)) {
     ticket = await createTicketData({
       registration,
       event,
@@ -391,6 +393,8 @@ async function registerForEvent({ shortId, payload, viewerUser = null }) {
         userId,
         registrationResponses,
         status: 'pending',
+        paymentStatus: event.isPaid ? 'pending' : 'not_required',
+        paymentId: null,
         emailVerified: false,
         emailVerifiedAt: null,
         updatedAt: now,
@@ -411,6 +415,8 @@ async function registerForEvent({ shortId, payload, viewerUser = null }) {
         socialProfileLink,
         registrationResponses,
         status: 'pending',
+        paymentStatus: event.isPaid ? 'pending' : 'not_required',
+        paymentId: null,
         emailVerified: false,
         createdAt: now,
         updatedAt: now,
@@ -573,12 +579,18 @@ async function verifyRegistrationEmailOtp({ shortId, email, otp }) {
   }
 
   const now = new Date()
-  const targetStatus =
-    registration.status === 'approved'
-      ? 'approved'
-      : event.requireApproval
-      ? 'pending'
-      : 'registered'
+  let targetStatus
+
+  if (event.isPaid && registration.paymentStatus !== 'completed') {
+    targetStatus = registration.status === 'approved' ? 'approved' : 'pending'
+  } else {
+    targetStatus =
+      registration.status === 'approved'
+        ? 'approved'
+        : event.requireApproval
+        ? 'pending'
+        : 'registered'
+  }
 
   const [updatedRegistration] = await db
     .update(registrations)
@@ -597,10 +609,12 @@ async function verifyRegistrationEmailOtp({ shortId, email, otp }) {
     qrCode,
   }
 
-  await sendRegistrationStatusEmail({
-    registration: registrationWithQr,
-    event,
-  })
+  if (!event.isPaid || updatedRegistration.paymentStatus === 'completed') {
+    await sendRegistrationStatusEmail({
+      registration: registrationWithQr,
+      event,
+    })
+  }
 
   return {
     registration: serializeRegistration(registrationWithQr, event),
@@ -641,6 +655,12 @@ async function approveRegistrationById({ registrationId, userId }) {
 
   if (!row.registration.emailVerified) {
     const err = new Error('Email verification is required before approval')
+    err.statusCode = 400
+    throw err
+  }
+
+  if (row.event.isPaid && row.registration.paymentStatus !== 'completed') {
+    const err = new Error('Payment must be completed before approval')
     err.statusCode = 400
     throw err
   }
@@ -719,8 +739,23 @@ async function rejectRegistrationById({ registrationId, userId }) {
     throw err
   }
 
-  const nextPaymentStatus =
-    row.registration.paymentStatus === 'completed' ? 'refunded' : row.registration.paymentStatus
+  let nextPaymentStatus = row.registration.paymentStatus
+
+  if (row.registration.paymentStatus === 'completed') {
+    const refundResult = await refundRegistrationPaymentByRegistrationId({
+      registrationId: row.registration.id,
+      reason: 'Registration rejected by host',
+      metadata: {
+        source: 'registration_rejection',
+        event_id: row.event.id,
+        registration_id: row.registration.id,
+      },
+    })
+
+    if (refundResult.refunded) {
+      nextPaymentStatus = 'refunded'
+    }
+  }
 
   const [updatedRegistration] = await db
     .update(registrations)
@@ -731,16 +766,6 @@ async function rejectRegistrationById({ registrationId, userId }) {
     })
     .where(eq(registrations.id, row.registration.id))
     .returning()
-
-  if (row.registration.paymentStatus === 'completed') {
-    await db
-      .update(payments)
-      .set({
-        status: 'refunded',
-        updatedAt: new Date(),
-      })
-      .where(and(eq(payments.registrationId, row.registration.id), eq(payments.status, 'completed')))
-  }
 
   if (updatedRegistration.emailVerified) {
     await sendRegistrationStatusEmail({

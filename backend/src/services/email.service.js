@@ -159,6 +159,15 @@ function getLocationText(event) {
   return event.locationAddress || 'Location details will be shared by host'
 }
 
+function formatMoney(amount, currency = 'USD') {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(Number(amount || 0))
+}
+
 function getTicketHtml(ticket) {
   if (!ticket) {
     return ''
@@ -220,6 +229,38 @@ async function sendRegistrationConfirmationEmail({ email, name, status, event, t
   })
 }
 
+async function sendPaymentReceiptEmail({ email, name, event, payment }) {
+  const eventUrl = `${env.CLIENT_URL}/events/${event.shortId}`
+  const currency = payment.currency || 'USD'
+  const breakdown = payment.breakdown || {
+    ticketAmount: payment.amount || 0,
+    platformFee: 0,
+    processingFee: 0,
+    totalAmount: payment.amount || 0,
+  }
+
+  return sendEmail({
+    to: email,
+    subject: `Payment receipt: ${event.name}`,
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:32px">
+        <h2 style="color:#111;margin-bottom:8px">Payment received</h2>
+        <p style="color:#555;font-size:15px">Hi ${name}, your payment for <strong>${event.name}</strong> was successful.</p>
+        <div style="background:#f4f4f5;border-radius:8px;padding:16px;margin:20px 0">
+          <p style="margin:0 0 8px;color:#111;font-weight:600">Receipt</p>
+          <p style="margin:0;color:#555;font-size:14px">Ticket: ${formatMoney(breakdown.ticketAmount, currency)}</p>
+          <p style="margin:6px 0 0;color:#555;font-size:14px">Platform fee: ${formatMoney(breakdown.platformFee, currency)}</p>
+          <p style="margin:6px 0 0;color:#555;font-size:14px">Processing fee: ${formatMoney(breakdown.processingFee, currency)}</p>
+          <p style="margin:10px 0 0;color:#111;font-size:15px;font-weight:600">Total paid: ${formatMoney(breakdown.totalAmount, currency)}</p>
+          <p style="margin:10px 0 0;color:#666;font-size:12px">Payment reference: ${payment.paymentGatewayId || payment.id}</p>
+          <p style="margin:6px 0 0;color:#666;font-size:12px">Paid at: ${new Date(payment.paidAt || Date.now()).toLocaleString()}</p>
+        </div>
+        <a href="${eventUrl}" style="display:inline-block;background:#111;color:#fff;padding:12px 18px;border-radius:6px;text-decoration:none;font-weight:600;font-size:14px">View Event</a>
+      </div>
+    `,
+  })
+}
+
 async function sendEventInvitationEmail({ email, event, inviterName, subject = null, message = null }) {
   const eventUrl = `${env.CLIENT_URL}/events/${event.shortId}`
   const heading = inviterName ? `${inviterName} invited you` : 'You are invited'
@@ -268,6 +309,7 @@ export {
   sendPasswordResetEmail,
   sendWelcomeEmail,
   sendRegistrationConfirmationEmail,
+  sendPaymentReceiptEmail,
   sendEventInvitationEmail,
   sendEventBlastEmail,
 }

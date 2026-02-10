@@ -101,8 +101,20 @@ function isQrPayloadValid(payload, registration) {
   return payload.checksum === expectedChecksum
 }
 
-function isTicketEligible(registration) {
-  return Boolean(registration?.emailVerified) && TICKET_ELIGIBLE_STATUSES.includes(registration?.status)
+function isTicketEligible(registration, event = null) {
+  if (!Boolean(registration?.emailVerified)) {
+    return false
+  }
+
+  if (!TICKET_ELIGIBLE_STATUSES.includes(registration?.status)) {
+    return false
+  }
+
+  if (event?.isPaid && registration?.paymentStatus !== 'completed') {
+    return false
+  }
+
+  return true
 }
 
 function canAccessRegistrationTicket(row, viewer) {
@@ -338,7 +350,7 @@ async function getRegistrationTicketById({ registrationId, viewer, includePdf = 
     throw err
   }
 
-  if (!isTicketEligible(row.registration)) {
+  if (!isTicketEligible(row.registration, row.event)) {
     const err = new Error('Ticket is not available for this registration yet')
     err.statusCode = 400
     throw err
