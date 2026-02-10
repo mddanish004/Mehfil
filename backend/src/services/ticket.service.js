@@ -368,4 +368,6 @@ export {
   ensureRegistrationQrCode,
   getRegistrationTicketById,
   isTicketEligible,
+  parseQrPayload,
+  isQrPayloadValid,
 }

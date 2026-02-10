@@ -115,6 +115,46 @@ async function sendEventBlast(shortId, payload) {
   return data.data
 }
 
+function parseStreamMessage(raw) {
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
+}
+
+function subscribeToEventCheckinStream(
+  shortId,
+  { onConnected = null, onCheckin = null, onError = null } = {}
+) {
+  const eventSource = new EventSource(`/api/events/${shortId}/checkin-stream`, {
+    withCredentials: true,
+  })
+
+  if (typeof onConnected === 'function') {
+    eventSource.addEventListener('connected', (event) => {
+      onConnected(parseStreamMessage(event.data))
+    })
+  }
+
+  if (typeof onCheckin === 'function') {
+    eventSource.addEventListener('checkin', (event) => {
+      const payload = parseStreamMessage(event.data)
+      if (payload) {
+        onCheckin(payload)
+      }
+    })
+  }
+
+  if (typeof onError === 'function') {
+    eventSource.onerror = onError
+  }
+
+  return () => {
+    eventSource.close()
+  }
+}
+
 export {
   getEvents,
   createEvent,
@@ -135,4 +175,5 @@ export {
   inviteEventGuests,
   getEventBlast,
   sendEventBlast,
+  subscribeToEventCheckinStream,
 }

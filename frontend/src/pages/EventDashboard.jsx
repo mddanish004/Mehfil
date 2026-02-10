@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -17,9 +17,20 @@ import {
   inviteEventGuests,
   rejectRegistration,
   removeEventHost,
+  subscribeToEventCheckinStream,
   sendEventBlast,
   updateEvent,
 } from '@/lib/events-api'
+import {
+  checkInRegistrationById,
+  verifyRegistrationQr,
+} from '@/lib/registrations-api'
+import {
+  countOfflineCheckins,
+  enqueueOfflineCheckin,
+  listOfflineCheckins,
+  removeOfflineCheckin,
+} from '@/lib/checkin-offline'
 
 const TABS = ['overview', 'guests', 'registration', 'blast', 'more']
 
@@ -39,6 +50,18 @@ function parseEmails(value) {
     .split(/[\n,;]+/)
     .map((item) => item.trim().toLowerCase())
     .filter(Boolean)
+}
+
+function vibrate(pattern) {
+  if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+    navigator.vibrate(pattern)
+  }
+}
+
+function isNetworkError(error) {
+  if (!error) return false
+  if (error.code === 'ERR_NETWORK') return true
+  return !error.response
 }
 
 function createEmptyQuestion() {
@@ -90,10 +113,28 @@ function EventDashboard() {
   const [blastEmails, setBlastEmails] = useState('')
 
   const [refundMode, setRefundMode] = useState('none')
+  const [scannerActive, setScannerActive] = useState(false)
+  const [scannerLoading, setScannerLoading] = useState(false)
+  const [scannerError, setScannerError] = useState('')
+  const [scanStatus, setScanStatus] = useState('')
+  const [scanGuest, setScanGuest] = useState(null)
+  const [manualRegistrationId, setManualRegistrationId] = useState('')
+  const [manualCheckinLoading, setManualCheckinLoading] = useState(false)
+  const [offlineQueueCount, setOfflineQueueCount] = useState(0)
+  const [offlineSyncing, setOfflineSyncing] = useState(false)
+  const [streamConnected, setStreamConnected] = useState(false)
 
-  const loadDashboard = useCallback(async () => {
+  const scannerRef = useRef(null)
+  const scanLockRef = useRef(false)
+  const scanDedupRef = useRef({ value: '', at: 0 })
+  const streamRefreshTimeoutRef = useRef(null)
+  const scannerRegionId = useMemo(() => `event-dashboard-qr-reader-${shortId}`, [shortId])
+
+  const loadDashboard = useCallback(async ({ silent = false } = {}) => {
     try {
-      setLoading(true)
+      if (!silent) {
+        setLoading(true)
+      }
       const data = await getEventDashboard(shortId, {
         guestSearch: guestFilters.search || undefined,
         guestStatus: guestFilters.status,
@@ -112,10 +153,14 @@ function EventDashboard() {
       setQuestions(data.registration?.customQuestions || [])
       setRefundMode(data.more?.cancellation?.refundHandling?.options?.[0] || 'none')
     } catch (error) {
-      toast.error(getErrorMessage(error))
-      setDashboard(null)
+      if (!silent) {
+        toast.error(getErrorMessage(error))
+        setDashboard(null)
+      }
     } finally {
-      setLoading(false)
+      if (!silent) {
+        setLoading(false)
+      }
     }
   }, [shortId, guestFilters, blastPage])
 
@@ -176,6 +221,319 @@ function EventDashboard() {
     []
   )
 
+  const refreshOfflineQueueCount = useCallback(async () => {
+    try {
+      const count = await countOfflineCheckins(shortId)
+      setOfflineQueueCount(count)
+    } catch {
+      setOfflineQueueCount(0)
+    }
+  }, [shortId])
+
+  const stopScanner = useCallback(async () => {
+    const scanner = scannerRef.current
+    scannerRef.current = null
+    scanLockRef.current = false
+    scanDedupRef.current = { value: '', at: 0 }
+    if (scanner) {
+      try {
+        await scanner.stop()
+      } catch (error) {
+        void error
+      }
+      try {
+        await scanner.clear()
+      } catch (error) {
+        void error
+      }
+    }
+    setScannerActive(false)
+  }, [])
+
+  const handleCheckinSuccess = useCallback(
+    async (result, successMessage) => {
+      setScannerError('')
+      setScanGuest(result.registration || null)
+      setScanStatus(`Checked in at ${formatDate(result?.checkin?.checkedInAt)}`)
+      vibrate([80, 40, 80])
+      if (successMessage) {
+        toast.success(successMessage)
+      }
+      await Promise.all([loadDashboard({ silent: true }), refreshOfflineQueueCount()])
+    },
+    [loadDashboard, refreshOfflineQueueCount]
+  )
+
+  const queueOfflineAction = useCallback(
+    async (payload) => {
+      await enqueueOfflineCheckin(payload)
+      await refreshOfflineQueueCount()
+      setScanStatus('Saved offline. Will sync when online.')
+      toast.success('Check-in saved offline')
+    },
+    [refreshOfflineQueueCount]
+  )
+
+  const syncOfflineCheckins = useCallback(async () => {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      return
+    }
+
+    let queued = []
+    try {
+      queued = await listOfflineCheckins(shortId)
+    } catch {
+      return
+    }
+
+    if (!queued.length) {
+      await refreshOfflineQueueCount()
+      return
+    }
+
+    setOfflineSyncing(true)
+    let synced = 0
+    for (const item of queued) {
+      try {
+        if (item.type === 'qr') {
+          await verifyRegistrationQr({
+            eventShortId: shortId,
+            qrCode: item.qrCode,
+            source: 'offline_sync',
+          })
+        } else {
+          await checkInRegistrationById(item.registrationId, {
+            eventShortId: shortId,
+            source: 'offline_sync',
+          })
+        }
+        await removeOfflineCheckin(item.id)
+        synced += 1
+      } catch (error) {
+        const status = error?.response?.status
+        if (status && status >= 400 && status < 500) {
+          await removeOfflineCheckin(item.id)
+          continue
+        }
+        if (isNetworkError(error)) {
+          break
+        }
+      }
+    }
+
+    await Promise.all([loadDashboard({ silent: true }), refreshOfflineQueueCount()])
+    if (synced > 0) {
+      toast.success(`Offline sync complete (${synced})`)
+    }
+    setOfflineSyncing(false)
+  }, [shortId, loadDashboard, refreshOfflineQueueCount])
+
+  const handleManualCheckinById = useCallback(
+    async (registrationId, options = {}) => {
+      const cleanedId = String(registrationId || '').trim()
+      if (!cleanedId) {
+        toast.error('Registration ID is required')
+        return
+      }
+
+      try {
+        setManualCheckinLoading(true)
+        setScannerError('')
+
+        if (typeof navigator !== 'undefined' && !navigator.onLine) {
+          await queueOfflineAction({
+            type: 'manual',
+            eventShortId: shortId,
+            registrationId: cleanedId,
+          })
+          if (options.clearInput) {
+            setManualRegistrationId('')
+          }
+          return
+        }
+
+        const result = await checkInRegistrationById(cleanedId, {
+          eventShortId: shortId,
+          source: 'manual',
+        })
+        if (options.clearInput) {
+          setManualRegistrationId('')
+        }
+        await handleCheckinSuccess(result, 'Guest checked in')
+      } catch (error) {
+        if (isNetworkError(error)) {
+          await queueOfflineAction({
+            type: 'manual',
+            eventShortId: shortId,
+            registrationId: cleanedId,
+          })
+          if (options.clearInput) {
+            setManualRegistrationId('')
+          }
+          return
+        }
+        const message = getErrorMessage(error)
+        setScannerError(message)
+        setScanStatus('')
+        vibrate([140])
+        toast.error(message)
+      } finally {
+        setManualCheckinLoading(false)
+      }
+    },
+    [shortId, queueOfflineAction, handleCheckinSuccess]
+  )
+
+  const processQrScan = useCallback(
+    async (decodedText) => {
+      const value = String(decodedText || '').trim()
+      if (!value || scanLockRef.current) {
+        return
+      }
+
+      const now = Date.now()
+      const deduped =
+        scanDedupRef.current.value === value && now - scanDedupRef.current.at < 2500
+      if (deduped) {
+        return
+      }
+
+      scanLockRef.current = true
+      scanDedupRef.current = { value, at: now }
+
+      try {
+        setScannerError('')
+        setScanStatus('Verifying QR...')
+
+        if (typeof navigator !== 'undefined' && !navigator.onLine) {
+          await queueOfflineAction({
+            type: 'qr',
+            eventShortId: shortId,
+            qrCode: value,
+          })
+          return
+        }
+
+        const result = await verifyRegistrationQr({
+          eventShortId: shortId,
+          qrCode: value,
+          source: 'scanner',
+        })
+        await handleCheckinSuccess(result, 'QR check-in successful')
+      } catch (error) {
+        if (isNetworkError(error)) {
+          await queueOfflineAction({
+            type: 'qr',
+            eventShortId: shortId,
+            qrCode: value,
+          })
+          return
+        }
+        const message = getErrorMessage(error)
+        setScannerError(message)
+        setScanStatus('')
+        setScanGuest(null)
+        vibrate([140])
+        toast.error(message)
+      } finally {
+        scanLockRef.current = false
+      }
+    },
+    [shortId, handleCheckinSuccess, queueOfflineAction]
+  )
+
+  const startScanner = useCallback(async () => {
+    if (scannerRef.current) {
+      return
+    }
+
+    if (typeof navigator !== 'undefined' && !navigator.mediaDevices?.getUserMedia) {
+      setScannerError('Camera access is not supported on this browser')
+      return
+    }
+
+    try {
+      setScannerLoading(true)
+      setScannerError('')
+      setScanStatus('')
+      const { Html5Qrcode } = await import('html5-qrcode')
+      const cameras = await Html5Qrcode.getCameras()
+      if (!cameras?.length) {
+        throw new Error('No camera found')
+      }
+
+      const scanner = new Html5Qrcode(scannerRegionId)
+      scannerRef.current = scanner
+
+      const config = {
+        fps: 10,
+        qrbox: { width: 240, height: 240 },
+      }
+
+      try {
+        await scanner.start({ facingMode: 'environment' }, config, processQrScan, () => {})
+      } catch {
+        await scanner.start({ deviceId: { exact: cameras[0].id } }, config, processQrScan, () => {})
+      }
+
+      setScannerActive(true)
+    } catch (error) {
+      await stopScanner()
+      setScannerError(error?.message || 'Unable to start scanner')
+    } finally {
+      setScannerLoading(false)
+    }
+  }, [processQrScan, scannerRegionId, stopScanner])
+
+  useEffect(() => {
+    refreshOfflineQueueCount()
+    syncOfflineCheckins()
+  }, [refreshOfflineQueueCount, syncOfflineCheckins])
+
+  useEffect(() => {
+    const onOnline = () => {
+      syncOfflineCheckins()
+    }
+    window.addEventListener('online', onOnline)
+    return () => {
+      window.removeEventListener('online', onOnline)
+    }
+  }, [syncOfflineCheckins])
+
+  useEffect(() => {
+    const unsubscribe = subscribeToEventCheckinStream(shortId, {
+      onConnected: () => setStreamConnected(true),
+      onCheckin: () => {
+        if (activeTab !== 'guests') {
+          return
+        }
+        if (streamRefreshTimeoutRef.current) {
+          return
+        }
+        streamRefreshTimeoutRef.current = window.setTimeout(async () => {
+          streamRefreshTimeoutRef.current = null
+          await loadDashboard({ silent: true })
+        }, 300)
+      },
+      onError: () => {
+        setStreamConnected(false)
+      },
+    })
+
+    return () => {
+      setStreamConnected(false)
+      if (streamRefreshTimeoutRef.current) {
+        window.clearTimeout(streamRefreshTimeoutRef.current)
+        streamRefreshTimeoutRef.current = null
+      }
+      unsubscribe()
+    }
+  }, [shortId, activeTab, loadDashboard])
+
+  useEffect(() => () => {
+    stopScanner()
+  }, [stopScanner])
+
   async function handleApplyGuestFilters(eventObject) {
     eventObject.preventDefault()
     setGuestFilters((previous) => ({
@@ -184,6 +542,11 @@ function EventDashboard() {
       status: guestStatusInput,
       page: 1,
     }))
+  }
+
+  async function handleManualCheckinSubmit(eventObject) {
+    eventObject.preventDefault()
+    await handleManualCheckinById(manualRegistrationId, { clearInput: true })
   }
 
   async function handleGuestModeration(registrationId, action) {
@@ -680,6 +1043,78 @@ function EventDashboard() {
 
           <Card>
             <CardHeader>
+              <CardTitle>Check-in Scanner</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                <span className={streamConnected ? 'text-emerald-600' : ''}>
+                  {streamConnected ? 'Live updates connected' : 'Live updates reconnecting'}
+                </span>
+                <span>•</span>
+                <span>{offlineQueueCount} offline queued</span>
+                {offlineSyncing ? (
+                  <>
+                    <span>•</span>
+                    <span>syncing...</span>
+                  </>
+                ) : null}
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  onClick={scannerActive ? stopScanner : startScanner}
+                  disabled={scannerLoading}
+                >
+                  {scannerLoading ? 'Starting...' : scannerActive ? 'Stop Scanner' : 'Start Scanner'}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={syncOfflineCheckins}
+                  disabled={offlineSyncing || offlineQueueCount === 0}
+                >
+                  {offlineSyncing ? 'Syncing...' : 'Sync Offline'}
+                </Button>
+              </div>
+
+              <div
+                id={scannerRegionId}
+                className="min-h-[260px] overflow-hidden rounded-md border bg-muted/20"
+              />
+
+              {scanStatus ? <p className="text-sm text-emerald-700">{scanStatus}</p> : null}
+              {scannerError ? (
+                <p className="text-sm text-red-600">
+                  {scannerError}. Use manual check-in below if needed.
+                </p>
+              ) : null}
+
+              {scanGuest ? (
+                <div className="rounded-md border bg-emerald-50 p-3">
+                  <p className="text-sm font-semibold">{scanGuest.name}</p>
+                  <p className="text-xs text-muted-foreground">{scanGuest.email}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Status: {scanGuest.status} • Checked in: {formatDate(scanGuest.checkedInAt)}
+                  </p>
+                </div>
+              ) : null}
+
+              <form onSubmit={handleManualCheckinSubmit} className="flex flex-col gap-2 md:flex-row">
+                <Input
+                  value={manualRegistrationId}
+                  onChange={(eventObject) => setManualRegistrationId(eventObject.target.value)}
+                  placeholder="Manual fallback: registration ID"
+                />
+                <Button type="submit" disabled={manualCheckinLoading}>
+                  {manualCheckinLoading ? 'Checking in...' : 'Manual Check-in'}
+                </Button>
+              </form>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
               <CardTitle>Guest List</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -750,6 +1185,18 @@ function EventDashboard() {
                                 onClick={() => handleGuestModeration(row.id, 'reject')}
                               >
                                 Reject
+                              </Button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                disabled={
+                                  manualCheckinLoading ||
+                                  row.checkedIn ||
+                                  !['approved', 'registered'].includes(row.status)
+                                }
+                                onClick={() => handleManualCheckinById(row.id)}
+                              >
+                                {row.checkedIn ? 'Checked In' : 'Check In'}
                               </Button>
                             </div>
                           </td>

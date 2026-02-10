@@ -16,6 +16,7 @@ import {
 } from '../services/registration.service.js'
 import {
   addEventHostByShortId,
+  assertHostAccessByShortId,
   exportEventGuestsCsvByShortId,
   getEventBlastByShortId,
   getEventDashboardByShortId,
@@ -25,6 +26,7 @@ import {
   sendEventBlastByShortId,
   ALL_GUEST_STATUSES,
 } from '../services/event-dashboard.service.js'
+import { subscribeToCheckinStream } from '../services/realtime.service.js'
 
 const registrationQuestionSchema = z
   .object({
@@ -274,6 +276,10 @@ const createBlastSchema = z.object({
 const blastQuerySchema = z.object({
   page: z.coerce.number().int().min(1).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
+})
+
+const checkinStreamParamsSchema = z.object({
+  shortId: z.string().trim().min(1).max(255),
 })
 
 function parseSchema(schema, payload) {
@@ -544,6 +550,41 @@ async function handleGetEventDashboard(req, res, next) {
   }
 }
 
+async function handleEventCheckinStream(req, res, next) {
+  try {
+    const { shortId } = parseSchema(checkinStreamParamsSchema, req.params || {})
+    const event = await assertHostAccessByShortId({
+      shortId,
+      userId: req.user.id,
+    })
+
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    res.setHeader('X-Accel-Buffering', 'no')
+    res.flushHeaders?.()
+
+    const unsubscribe = subscribeToCheckinStream({
+      eventId: event.id,
+      res,
+    })
+
+    let closed = false
+    const cleanup = () => {
+      if (closed) {
+        return
+      }
+      closed = true
+      unsubscribe()
+    }
+
+    req.on('close', cleanup)
+    res.on('close', cleanup)
+  } catch (error) {
+    next(error)
+  }
+}
+
 async function handleGetEventHosts(req, res, next) {
   try {
     const result = await listEventHostsByShortId({
@@ -674,6 +715,7 @@ export {
   handleApproveRegistration,
   handleRejectRegistration,
   handleGetEventDashboard,
+  handleEventCheckinStream,
   handleGetEventHosts,
   handleAddEventHost,
   handleRemoveEventHost,

@@ -212,6 +212,10 @@ async function getEventWithHostAccess(shortId, userId) {
   return event
 }
 
+async function assertHostAccessByShortId({ shortId, userId }) {
+  return getEventWithHostAccess(shortId, userId)
+}
+
 async function listHostsForEvent(eventId) {
   const rows = await db
     .select({
@@ -912,4 +916,5 @@ export {
   getEventBlastByShortId,
   sendEventBlastByShortId,
   ALL_GUEST_STATUSES,
+  assertHostAccessByShortId,
 }

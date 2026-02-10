@@ -29,4 +29,19 @@ async function downloadRegistrationTicketPdf(registrationId) {
   }
 }
 
-export { getRegistrationTicket, downloadRegistrationTicketPdf }
+async function verifyRegistrationQr(payload) {
+  const { data } = await api.post('/registrations/verify-qr', payload)
+  return data.data
+}
+
+async function checkInRegistrationById(registrationId, payload = {}) {
+  const { data } = await api.post(`/registrations/${registrationId}/checkin`, payload)
+  return data.data
+}
+
+export {
+  getRegistrationTicket,
+  downloadRegistrationTicketPdf,
+  verifyRegistrationQr,
+  checkInRegistrationById,
+}

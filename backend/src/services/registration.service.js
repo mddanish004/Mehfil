@@ -17,10 +17,15 @@ import {
   createTicketData,
   ensureRegistrationQrCode,
   isTicketEligible,
+  isQrPayloadValid,
+  parseQrPayload,
 } from './ticket.service.js'
 import { refundRegistrationPaymentByRegistrationId } from './payment.service.js'
+import { publishCheckinUpdate } from './realtime.service.js'
 
 const ACTIVE_REGISTRATION_STATUSES = ['pending', 'approved', 'registered']
+const CHECKIN_ELIGIBLE_STATUSES = ['approved', 'registered']
+const CHECKIN_SOURCES = new Set(['scanner', 'manual', 'offline_sync'])
 
 function assertDb() {
   if (!db) {
@@ -28,6 +33,21 @@ function assertDb() {
     err.statusCode = 500
     throw err
   }
+}
+
+function createCheckinError(message, statusCode, code) {
+  const err = new Error(message)
+  err.statusCode = statusCode
+  err.code = code
+  return err
+}
+
+function normalizeCheckinSource(source, fallback = 'manual') {
+  const normalized = typeof source === 'string' ? source.trim().toLowerCase() : ''
+  if (CHECKIN_SOURCES.has(normalized)) {
+    return normalized
+  }
+  return fallback
 }
 
 function normalizeEmail(email) {
@@ -777,6 +797,251 @@ async function rejectRegistrationById({ registrationId, userId }) {
   return serializeRegistration(updatedRegistration, row.event)
 }
 
+function serializeCheckinRegistration(registration) {
+  return {
+    id: registration.id,
+    eventId: registration.eventId,
+    userId: registration.userId,
+    name: registration.name,
+    email: registration.email,
+    phone: registration.phone,
+    status: registration.status,
+    emailVerified: Boolean(registration.emailVerified),
+    paymentStatus: registration.paymentStatus,
+    checkedIn: Boolean(registration.checkedIn),
+    checkedInAt: registration.checkedInAt,
+    createdAt: registration.createdAt,
+    updatedAt: registration.updatedAt,
+  }
+}
+
+async function assertHostAccessToEvent({ eventId, userId }) {
+  const [access] = await db
+    .select({ id: eventHosts.id })
+    .from(eventHosts)
+    .where(and(eq(eventHosts.eventId, eventId), eq(eventHosts.userId, userId)))
+    .limit(1)
+
+  if (!access) {
+    throw createCheckinError('You do not have permission to manage check-ins for this event', 403, 'FORBIDDEN')
+  }
+}
+
+async function getEventByShortIdForCheckin(shortId) {
+  const [event] = await db
+    .select({
+      id: events.id,
+      shortId: events.shortId,
+      name: events.name,
+      isPaid: events.isPaid,
+      status: events.status,
+      endDatetime: events.endDatetime,
+    })
+    .from(events)
+    .where(eq(events.shortId, shortId))
+    .limit(1)
+
+  return event || null
+}
+
+async function getRegistrationWithEventForCheckin(registrationId) {
+  const [row] = await db
+    .select({
+      registration: registrations,
+      event: {
+        id: events.id,
+        shortId: events.shortId,
+        name: events.name,
+        isPaid: events.isPaid,
+        status: events.status,
+        endDatetime: events.endDatetime,
+      },
+    })
+    .from(registrations)
+    .innerJoin(events, eq(registrations.eventId, events.id))
+    .where(eq(registrations.id, registrationId))
+    .limit(1)
+
+  return row || null
+}
+
+function assertRegistrationCanCheckIn(row) {
+  if (row.event.status === 'cancelled') {
+    throw createCheckinError('Event is cancelled. Check-in is not available.', 400, 'EVENT_CANCELLED')
+  }
+
+  if (!row.registration.emailVerified) {
+    throw createCheckinError('Guest email is not verified', 400, 'EMAIL_NOT_VERIFIED')
+  }
+
+  if (!CHECKIN_ELIGIBLE_STATUSES.includes(row.registration.status)) {
+    throw createCheckinError('Guest is not eligible for check-in', 400, 'CHECKIN_NOT_ALLOWED')
+  }
+
+  if (row.event.isPaid && row.registration.paymentStatus !== 'completed') {
+    throw createCheckinError('Payment is incomplete for this guest', 400, 'PAYMENT_INCOMPLETE')
+  }
+}
+
+async function markRegistrationCheckedIn(row) {
+  if (row.registration.checkedIn) {
+    throw createCheckinError('Guest already checked in', 409, 'ALREADY_CHECKED_IN')
+  }
+
+  const checkedInAt = new Date()
+  const [updated] = await db
+    .update(registrations)
+    .set({
+      checkedIn: true,
+      checkedInAt,
+      updatedAt: checkedInAt,
+    })
+    .where(and(eq(registrations.id, row.registration.id), eq(registrations.checkedIn, false)))
+    .returning()
+
+  if (updated) {
+    return updated
+  }
+
+  throw createCheckinError('Guest already checked in', 409, 'ALREADY_CHECKED_IN')
+}
+
+function serializeCheckinResult({ event, registration, method, source }) {
+  return {
+    event: {
+      id: event.id,
+      shortId: event.shortId,
+      name: event.name,
+    },
+    registration: serializeCheckinRegistration(registration),
+    checkin: {
+      method,
+      source,
+      checkedInAt: registration.checkedInAt,
+    },
+  }
+}
+
+function publishCheckinEvent({ event, registration, method, source, checkedInByUserId }) {
+  publishCheckinUpdate({
+    eventId: event.id,
+    payload: {
+      type: 'registration_checked_in',
+      eventId: event.id,
+      eventShortId: event.shortId,
+      registrationId: registration.id,
+      checkedInAt: registration.checkedInAt,
+      method,
+      source,
+      checkedInByUserId,
+      guest: {
+        id: registration.id,
+        name: registration.name,
+        email: registration.email,
+      },
+      publishedAt: new Date().toISOString(),
+    },
+  })
+}
+
+async function verifyQrAndCheckInByHost({
+  eventShortId,
+  qrCode,
+  userId,
+  source = 'scanner',
+}) {
+  assertDb()
+
+  const normalizedEventShortId = typeof eventShortId === 'string' ? eventShortId.trim() : ''
+  if (!normalizedEventShortId) {
+    throw createCheckinError('Event shortId is required', 400, 'VALIDATION_ERROR')
+  }
+
+  const event = await getEventByShortIdForCheckin(normalizedEventShortId)
+  if (!event) {
+    throw createCheckinError('Event not found', 404, 'EVENT_NOT_FOUND')
+  }
+
+  await assertHostAccessToEvent({ eventId: event.id, userId })
+
+  const parsedPayload = parseQrPayload(typeof qrCode === 'string' ? qrCode.trim() : '')
+  if (!parsedPayload) {
+    throw createCheckinError('Invalid QR code format', 400, 'INVALID_QR_CODE')
+  }
+
+  if (parsedPayload.eventId !== event.id) {
+    throw createCheckinError('QR code does not belong to this event', 400, 'QR_EVENT_MISMATCH')
+  }
+
+  const row = await getRegistrationWithEventForCheckin(parsedPayload.registrationId)
+  if (!row || row.event.id !== event.id) {
+    throw createCheckinError('QR code is not valid for this event', 400, 'INVALID_QR_CODE')
+  }
+
+  if (!isQrPayloadValid(parsedPayload, row.registration)) {
+    throw createCheckinError('QR code validation failed', 400, 'INVALID_QR_CODE')
+  }
+
+  assertRegistrationCanCheckIn(row)
+
+  const updatedRegistration = await markRegistrationCheckedIn(row)
+  const normalizedSource = normalizeCheckinSource(source, 'scanner')
+
+  publishCheckinEvent({
+    event: row.event,
+    registration: updatedRegistration,
+    method: 'qr',
+    source: normalizedSource,
+    checkedInByUserId: userId,
+  })
+
+  return serializeCheckinResult({
+    event: row.event,
+    registration: updatedRegistration,
+    method: 'qr',
+    source: normalizedSource,
+  })
+}
+
+async function checkInRegistrationById({
+  registrationId,
+  userId,
+  eventShortId = null,
+  source = 'manual',
+}) {
+  assertDb()
+
+  const row = await getRegistrationWithEventForCheckin(registrationId)
+  if (!row) {
+    throw createCheckinError('Registration not found', 404, 'REGISTRATION_NOT_FOUND')
+  }
+
+  if (eventShortId && row.event.shortId !== eventShortId) {
+    throw createCheckinError('Registration does not belong to this event', 400, 'EVENT_REGISTRATION_MISMATCH')
+  }
+
+  await assertHostAccessToEvent({ eventId: row.event.id, userId })
+  assertRegistrationCanCheckIn(row)
+
+  const updatedRegistration = await markRegistrationCheckedIn(row)
+  const normalizedSource = normalizeCheckinSource(source, 'manual')
+
+  publishCheckinEvent({
+    event: row.event,
+    registration: updatedRegistration,
+    method: 'manual',
+    source: normalizedSource,
+    checkedInByUserId: userId,
+  })
+
+  return serializeCheckinResult({
+    event: row.event,
+    registration: updatedRegistration,
+    method: 'manual',
+    source: normalizedSource,
+  })
+}
+
 async function getGuestProfile({ userId = null, email = null }) {
   assertDb()
 
@@ -893,5 +1158,7 @@ export {
   verifyRegistrationEmailOtp,
   approveRegistrationById,
   rejectRegistrationById,
+  verifyQrAndCheckInByHost,
+  checkInRegistrationById,
   getGuestProfile,
 }
