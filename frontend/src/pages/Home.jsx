@@ -100,7 +100,7 @@ function Home() {
                 <MapPin className="h-10 w-10 text-primary mb-2" />
                 <CardTitle>Maps Integration</CardTitle>
                 <CardDescription>
-                  Integrated Google Maps for seamless location services.
+                  Integrated OpenStreetMap for seamless location services.
                 </CardDescription>
               </CardHeader>
               <CardContent>

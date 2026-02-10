@@ -7,12 +7,19 @@ import VerifyEmail from '@/pages/VerifyEmail'
 import ForgotPassword from '@/pages/ForgotPassword'
 import ResetPassword from '@/pages/ResetPassword'
 import NotFound from '@/pages/NotFound'
+import ProtectedRoute from '@/components/ProtectedRoute'
+import CreateEvent from '@/pages/CreateEvent'
+import EditEvent from '@/pages/EditEvent'
+import EventDetail from '@/pages/EventDetail'
 
 function App() {
   return (
     <div className="min-h-screen bg-background text-foreground">
       <Routes>
         <Route path="/" element={<Home />} />
+        <Route path="/create-event" element={<ProtectedRoute><CreateEvent /></ProtectedRoute>} />
+        <Route path="/events/:shortId" element={<EventDetail />} />
+        <Route path="/events/:shortId/edit" element={<ProtectedRoute><EditEvent /></ProtectedRoute>} />
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
         <Route path="/verify-email" element={<VerifyEmail />} />

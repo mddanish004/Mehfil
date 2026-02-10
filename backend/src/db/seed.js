@@ -191,7 +191,7 @@ async function seed() {
       locationAddress: null,
       locationLat: null,
       locationLng: null,
-      googleMeetLink: 'https://meet.google.com/abc-defg-hij',
+      googleMeetLink: 'https://zoom.us/j/98765432101',
       ticketPrice: '0',
       isPaid: false,
       requireApproval: true,
