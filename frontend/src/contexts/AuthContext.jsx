@@ -27,11 +27,10 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     function handleForceLogout() {
       setUser(null)
-      navigate('/login')
     }
     window.addEventListener('auth:logout', handleForceLogout)
     return () => window.removeEventListener('auth:logout', handleForceLogout)
-  }, [navigate])
+  }, [])
 
   const signup = async ({ name, email, password }) => {
     const { data } = await api.post('/auth/signup', { name, email, password })

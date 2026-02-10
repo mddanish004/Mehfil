@@ -11,6 +11,7 @@ import {
   getMe,
   sanitizeUser,
 } from '../services/auth.service.js'
+import env from '../config/env.js'
 
 async function handleSignup(req, res, next) {
   try {
@@ -203,13 +204,13 @@ async function handleGoogleCallback(req, res, next) {
   try {
     const user = req.user
     if (!user) {
-      return res.redirect(`${process.env.CLIENT_URL || 'http://localhost:5173'}/login?error=google_failed`)
+      return res.redirect(`${env.CLIENT_URL}/login?error=google_failed`)
     }
 
     await createSession(res, user)
-    res.redirect(process.env.CLIENT_URL || 'http://localhost:5173')
+    res.redirect(env.CLIENT_URL)
   } catch (error) {
-    next(error)
+    res.redirect(`${env.CLIENT_URL}/login?error=google_failed`)
   }
 }
 

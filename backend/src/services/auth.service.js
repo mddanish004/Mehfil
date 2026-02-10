@@ -343,7 +343,7 @@ async function resetPassword({ token, password }) {
 
   await db
     .update(users)
-    .set({ passwordHash, updatedAt: new Date() })
+    .set({ passwordHash, emailVerified: true, updatedAt: new Date() })
     .where(eq(users.id, resetToken.userId))
 
   await db
