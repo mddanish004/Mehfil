@@ -11,8 +11,20 @@ import { generateZoomMeetingLink } from '../services/zoom.service.js'
 import { searchLocations } from '../services/location.service.js'
 import {
   approveRegistrationById,
+  rejectRegistrationById,
   registerForEvent,
 } from '../services/registration.service.js'
+import {
+  addEventHostByShortId,
+  exportEventGuestsCsvByShortId,
+  getEventBlastByShortId,
+  getEventDashboardByShortId,
+  inviteGuestsByShortId,
+  listEventHostsByShortId,
+  removeEventHostByShortId,
+  sendEventBlastByShortId,
+  ALL_GUEST_STATUSES,
+} from '../services/event-dashboard.service.js'
 
 const registrationQuestionSchema = z
   .object({
@@ -180,6 +192,90 @@ const approveRegistrationParamsSchema = z.object({
   registrationId: z.string().uuid(),
 })
 
+const rejectRegistrationParamsSchema = z.object({
+  registrationId: z.string().uuid(),
+})
+
+const cancelEventSchema = z.object({
+  refundMode: z.enum(['none', 'full']).optional().default('none'),
+})
+
+const dashboardQuerySchema = z.object({
+  format: z.enum(['json', 'csv']).optional(),
+  guestSearch: z.string().trim().max(255).optional(),
+  guestStatus: z.enum(['all', ...ALL_GUEST_STATUSES]).optional(),
+  guestPage: z.coerce.number().int().min(1).optional(),
+  guestLimit: z.coerce.number().int().min(1).max(100).optional(),
+  guestSortBy: z.enum(['createdAt', 'updatedAt', 'name', 'email', 'status']).optional(),
+  guestSortOrder: z.enum(['asc', 'desc']).optional(),
+  blastPage: z.coerce.number().int().min(1).optional(),
+  blastLimit: z.coerce.number().int().min(1).max(100).optional(),
+})
+
+const hostMutationSchema = z
+  .object({
+    userId: z.string().uuid().optional(),
+    email: z.string().trim().email().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (!data.userId && !data.email) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Either userId or email is required',
+      })
+    }
+  })
+
+const inviteGuestsSchema = z.object({
+  recipientEmails: z.array(z.string().trim().email()).min(1).max(200),
+  subject: z.string().trim().min(1).max(255).optional(),
+  message: z.string().max(20000).optional().nullable(),
+})
+
+const blastRecipientSchema = z
+  .object({
+    type: z.enum(['all', 'status', 'registrations', 'emails']),
+    statuses: z.array(z.enum(ALL_GUEST_STATUSES)).min(1).max(ALL_GUEST_STATUSES.length).optional(),
+    registrationIds: z.array(z.string().uuid()).min(1).max(500).optional(),
+    emails: z.array(z.string().trim().email()).min(1).max(500).optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.type === 'status' && !data.statuses?.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'statuses are required when type is status',
+        path: ['statuses'],
+      })
+    }
+
+    if (data.type === 'registrations' && !data.registrationIds?.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'registrationIds are required when type is registrations',
+        path: ['registrationIds'],
+      })
+    }
+
+    if (data.type === 'emails' && !data.emails?.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'emails are required when type is emails',
+        path: ['emails'],
+      })
+    }
+  })
+
+const createBlastSchema = z.object({
+  subject: z.string().trim().min(1).max(255),
+  content: z.string().min(1).max(100000),
+  recipients: blastRecipientSchema,
+})
+
+const blastQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+})
+
 function parseSchema(schema, payload) {
   try {
     return schema.parse(payload)
@@ -287,14 +383,16 @@ async function handleUpdateEvent(req, res, next) {
 
 async function handleDeleteEvent(req, res, next) {
   try {
-    const event = await cancelEventByShortId({
+    const { refundMode } = parseSchema(cancelEventSchema, req.body || {})
+    const result = await cancelEventByShortId({
       shortId: req.params.shortId,
       userId: req.user.id,
+      refundMode,
     })
 
     res.json({
       success: true,
-      data: { event },
+      data: result,
       message: 'Event cancelled successfully',
     })
   } catch (error) {
@@ -385,6 +483,184 @@ async function handleApproveRegistration(req, res, next) {
   }
 }
 
+async function handleRejectRegistration(req, res, next) {
+  try {
+    const { registrationId } = parseSchema(rejectRegistrationParamsSchema, req.params)
+    const registration = await rejectRegistrationById({
+      registrationId,
+      userId: req.user.id,
+    })
+
+    res.json({
+      success: true,
+      data: { registration },
+      message: 'Registration rejected',
+    })
+  } catch (error) {
+    next(error)
+  }
+}
+
+async function handleGetEventDashboard(req, res, next) {
+  try {
+    const query = parseSchema(dashboardQuerySchema, req.query || {})
+    const guestFilters = {
+      search: query.guestSearch || '',
+      status: query.guestStatus || 'all',
+      page: query.guestPage || 1,
+      limit: query.guestLimit || 20,
+      sortBy: query.guestSortBy || 'createdAt',
+      sortOrder: query.guestSortOrder || 'desc',
+    }
+
+    if (query.format === 'csv') {
+      const { csv, filename } = await exportEventGuestsCsvByShortId({
+        shortId: req.params.shortId,
+        userId: req.user.id,
+        guestFilters,
+      })
+
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+      return res.status(200).send(csv)
+    }
+
+    const dashboard = await getEventDashboardByShortId({
+      shortId: req.params.shortId,
+      userId: req.user.id,
+      guestFilters,
+      blastFilters: {
+        page: query.blastPage || 1,
+        limit: query.blastLimit || 20,
+      },
+    })
+
+    return res.json({
+      success: true,
+      data: { dashboard },
+    })
+  } catch (error) {
+    return next(error)
+  }
+}
+
+async function handleGetEventHosts(req, res, next) {
+  try {
+    const result = await listEventHostsByShortId({
+      shortId: req.params.shortId,
+      userId: req.user.id,
+    })
+
+    res.json({
+      success: true,
+      data: result,
+    })
+  } catch (error) {
+    next(error)
+  }
+}
+
+async function handleAddEventHost(req, res, next) {
+  try {
+    const payload = parseSchema(hostMutationSchema, req.body || {})
+    const result = await addEventHostByShortId({
+      shortId: req.params.shortId,
+      actorUserId: req.user.id,
+      userId: payload.userId || null,
+      email: payload.email || null,
+    })
+
+    res.status(201).json({
+      success: true,
+      data: result,
+      message: 'Host added successfully',
+    })
+  } catch (error) {
+    next(error)
+  }
+}
+
+async function handleRemoveEventHost(req, res, next) {
+  try {
+    const payload = parseSchema(hostMutationSchema, req.body || {})
+    const result = await removeEventHostByShortId({
+      shortId: req.params.shortId,
+      actorUserId: req.user.id,
+      userId: payload.userId || null,
+      email: payload.email || null,
+    })
+
+    res.json({
+      success: true,
+      data: result,
+      message: 'Host removed successfully',
+    })
+  } catch (error) {
+    next(error)
+  }
+}
+
+async function handleInviteGuests(req, res, next) {
+  try {
+    const payload = parseSchema(inviteGuestsSchema, req.body || {})
+    const result = await inviteGuestsByShortId({
+      shortId: req.params.shortId,
+      userId: req.user.id,
+      recipientEmails: payload.recipientEmails,
+      subject: payload.subject || null,
+      message: payload.message || null,
+    })
+
+    res.status(201).json({
+      success: true,
+      data: result,
+      message: 'Invitations processed',
+    })
+  } catch (error) {
+    next(error)
+  }
+}
+
+async function handleGetEventBlast(req, res, next) {
+  try {
+    const query = parseSchema(blastQuerySchema, req.query || {})
+    const result = await getEventBlastByShortId({
+      shortId: req.params.shortId,
+      userId: req.user.id,
+      page: query.page || 1,
+      limit: query.limit || 20,
+    })
+
+    res.json({
+      success: true,
+      data: result,
+    })
+  } catch (error) {
+    next(error)
+  }
+}
+
+async function handleCreateEventBlast(req, res, next) {
+  try {
+    const payload = parseSchema(createBlastSchema, req.body || {})
+    const result = await sendEventBlastByShortId({
+      shortId: req.params.shortId,
+      userId: req.user.id,
+      subject: payload.subject,
+      content: payload.content,
+      recipients: payload.recipients,
+    })
+
+    res.status(201).json({
+      success: true,
+      data: result,
+      message: 'Blast sent',
+    })
+  } catch (error) {
+    next(error)
+  }
+}
+
 export {
   handleCreateEvent,
   handleListEvents,
@@ -396,4 +672,12 @@ export {
   handleUploadEventPhoto,
   handleRegisterForEvent,
   handleApproveRegistration,
+  handleRejectRegistration,
+  handleGetEventDashboard,
+  handleGetEventHosts,
+  handleAddEventHost,
+  handleRemoveEventHost,
+  handleInviteGuests,
+  handleGetEventBlast,
+  handleCreateEventBlast,
 }

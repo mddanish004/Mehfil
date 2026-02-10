@@ -20,8 +20,8 @@ async function updateEvent(shortId, payload) {
   return data.data
 }
 
-async function cancelEvent(shortId) {
-  const { data } = await api.delete(`/events/${shortId}`)
+async function cancelEvent(shortId, payload = {}) {
+  const { data } = await api.delete(`/events/${shortId}`, { data: payload })
   return data.data.event
 }
 
@@ -64,6 +64,57 @@ async function approveRegistration(registrationId) {
   return data.data.registration
 }
 
+async function rejectRegistration(registrationId) {
+  const { data } = await api.put(`/events/registrations/${registrationId}/reject`)
+  return data.data.registration
+}
+
+async function getEventDashboard(shortId, params = {}) {
+  const { data } = await api.get(`/events/${shortId}/dashboard`, { params })
+  return data.data.dashboard
+}
+
+async function exportEventGuestsCsv(shortId, params = {}) {
+  const { data } = await api.get(`/events/${shortId}/dashboard`, {
+    params: {
+      ...params,
+      format: 'csv',
+    },
+    responseType: 'blob',
+  })
+  return data
+}
+
+async function getEventHosts(shortId) {
+  const { data } = await api.get(`/events/${shortId}/hosts`)
+  return data.data
+}
+
+async function addEventHost(shortId, payload) {
+  const { data } = await api.post(`/events/${shortId}/hosts`, payload)
+  return data.data
+}
+
+async function removeEventHost(shortId, payload) {
+  const { data } = await api.delete(`/events/${shortId}/hosts`, { data: payload })
+  return data.data
+}
+
+async function inviteEventGuests(shortId, payload) {
+  const { data } = await api.post(`/events/${shortId}/invite`, payload)
+  return data.data
+}
+
+async function getEventBlast(shortId, params = {}) {
+  const { data } = await api.get(`/events/${shortId}/blast`, { params })
+  return data.data
+}
+
+async function sendEventBlast(shortId, payload) {
+  const { data } = await api.post(`/events/${shortId}/blast`, payload)
+  return data.data
+}
+
 export {
   getEvents,
   createEvent,
@@ -75,4 +126,13 @@ export {
   searchOsmLocations,
   uploadEventPhoto,
   approveRegistration,
+  rejectRegistration,
+  getEventDashboard,
+  exportEventGuestsCsv,
+  getEventHosts,
+  addEventHost,
+  removeEventHost,
+  inviteEventGuests,
+  getEventBlast,
+  sendEventBlast,
 }

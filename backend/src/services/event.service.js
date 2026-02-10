@@ -1,9 +1,10 @@
-import { and, asc, desc, eq, gte, ilike, lte, or, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gte, ilike, inArray, lte, or, sql } from 'drizzle-orm'
 import { db } from '../config/db.js'
 import {
   events,
   eventHosts,
   eventUpdates,
+  payments,
   registrationQuestions,
   registrations,
   users,
@@ -779,7 +780,7 @@ async function updateEventByShortId({ shortId, userId, payload }) {
   return { event, zoomInfo }
 }
 
-async function cancelEventByShortId({ shortId, userId }) {
+async function cancelEventByShortId({ shortId, userId, refundMode = 'none' }) {
   assertDb()
 
   const current = await findEventRecordByShortId(shortId)
@@ -792,27 +793,98 @@ async function cancelEventByShortId({ shortId, userId }) {
   await ensureHostAccess(current.id, userId)
 
   if (current.status === 'cancelled') {
-    return await getEventByShortId(shortId)
+    return {
+      event: await getEventByShortId(shortId),
+      refundSummary: {
+        refundMode,
+        refundedPayments: 0,
+        cancelledRegistrations: 0,
+        alreadyCancelled: true,
+      },
+    }
   }
+
+  const now = new Date()
 
   const [updated] = await db
     .update(events)
     .set({
       status: 'cancelled',
-      updatedAt: new Date(),
+      updatedAt: now,
     })
     .where(eq(events.id, current.id))
     .returning()
+
+  const [activeRegistrations, refundablePayments] = await Promise.all([
+    db
+      .update(registrations)
+      .set({
+        status: 'cancelled',
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(registrations.eventId, current.id),
+          or(
+            eq(registrations.status, 'pending'),
+            eq(registrations.status, 'approved'),
+            eq(registrations.status, 'registered')
+          )
+        )
+      )
+      .returning({ id: registrations.id }),
+    refundMode === 'full'
+      ? db
+          .select({
+            id: payments.id,
+            registrationId: registrations.id,
+          })
+          .from(payments)
+          .innerJoin(registrations, eq(payments.registrationId, registrations.id))
+          .where(and(eq(registrations.eventId, current.id), eq(payments.status, 'completed')))
+      : Promise.resolve([]),
+  ])
+
+  if (refundMode === 'full' && refundablePayments.length) {
+    const paymentIds = refundablePayments.map((row) => row.id)
+    const registrationIds = [...new Set(refundablePayments.map((row) => row.registrationId))]
+
+    await Promise.all([
+      db
+        .update(payments)
+        .set({
+          status: 'refunded',
+          updatedAt: now,
+        })
+        .where(inArray(payments.id, paymentIds)),
+      db
+        .update(registrations)
+        .set({
+          paymentStatus: 'refunded',
+          updatedAt: now,
+        })
+        .where(inArray(registrations.id, registrationIds)),
+    ])
+  }
+
+  const refundSummary = {
+    refundMode,
+    refundedPayments: refundMode === 'full' ? refundablePayments.length : 0,
+    cancelledRegistrations: activeRegistrations.length,
+  }
 
   await db.insert(eventUpdates).values({
     eventId: current.id,
     updatedBy: userId,
     updateType: 'cancellation',
     oldValues: { status: current.status },
-    newValues: { status: updated.status },
+    newValues: { status: updated.status, ...refundSummary },
   })
 
-  return await getEventByShortId(shortId)
+  return {
+    event: await getEventByShortId(shortId),
+    refundSummary,
+  }
 }
 
 export { createEvent, getEventByShortId, listEvents, updateEventByShortId, cancelEventByShortId }

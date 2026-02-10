@@ -12,6 +12,14 @@ import {
   handleUploadEventPhoto,
   handleRegisterForEvent,
   handleApproveRegistration,
+  handleRejectRegistration,
+  handleGetEventDashboard,
+  handleGetEventHosts,
+  handleAddEventHost,
+  handleRemoveEventHost,
+  handleInviteGuests,
+  handleGetEventBlast,
+  handleCreateEventBlast,
 } from '../controllers/event.controller.js'
 
 const router = Router()
@@ -30,9 +38,17 @@ router.post('/upload-photo', requireAuth, upload.single('image'), handleUploadEv
 router.post('/', requireAuth, handleCreateEvent)
 router.get('/', optionalAuth, handleListEvents)
 router.post('/:shortId/register', optionalAuth, handleRegisterForEvent)
+router.get('/:shortId/dashboard', requireAuth, handleGetEventDashboard)
+router.get('/:shortId/hosts', requireAuth, handleGetEventHosts)
+router.post('/:shortId/hosts', requireAuth, handleAddEventHost)
+router.delete('/:shortId/hosts', requireAuth, handleRemoveEventHost)
+router.post('/:shortId/invite', requireAuth, handleInviteGuests)
+router.get('/:shortId/blast', requireAuth, handleGetEventBlast)
+router.post('/:shortId/blast', requireAuth, handleCreateEventBlast)
 router.get('/:shortId', optionalAuth, handleGetEventByShortId)
 router.put('/:shortId', requireAuth, handleUpdateEvent)
 router.delete('/:shortId', requireAuth, handleDeleteEvent)
 router.put('/registrations/:registrationId/approve', requireAuth, handleApproveRegistration)
+router.put('/registrations/:registrationId/reject', requireAuth, handleRejectRegistration)
 
 export default router

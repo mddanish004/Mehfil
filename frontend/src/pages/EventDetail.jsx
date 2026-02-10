@@ -1,6 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { CalendarDays, Clock, Globe, Loader2, MapPin, Pencil, Trash2, UserPlus } from 'lucide-react'
+import {
+  CalendarDays,
+  Clock,
+  Globe,
+  LayoutDashboard,
+  Loader2,
+  MapPin,
+  Pencil,
+  Trash2,
+  UserPlus,
+} from 'lucide-react'
 import { toast } from 'sonner'
 import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/button'
@@ -120,6 +130,12 @@ function EventDetail() {
           ) : null}
           {canManage ? (
             <>
+              <Button variant="outline" asChild>
+                <Link to={`/events/${event.shortId}/dashboard`}>
+                  <LayoutDashboard className="mr-2 h-4 w-4" />
+                  Dashboard
+                </Link>
+              </Button>
               <Button variant="outline" asChild>
                 <Link to={`/events/${event.shortId}/edit`}>
                   <Pencil className="mr-2 h-4 w-4" />

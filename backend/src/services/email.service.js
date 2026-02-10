@@ -132,6 +132,20 @@ function getStatusCopy(status) {
     }
   }
 
+  if (status === 'rejected') {
+    return {
+      title: 'Registration update',
+      body: 'Your registration was not approved by the host.',
+    }
+  }
+
+  if (status === 'cancelled') {
+    return {
+      title: 'Registration cancelled',
+      body: 'This registration has been cancelled.',
+    }
+  }
+
   return {
     title: 'Registration confirmed',
     body: 'You are fully registered for this event.',
@@ -164,14 +178,17 @@ function getTicketHtml(ticket) {
 
 async function sendRegistrationConfirmationEmail({ email, name, status, event, ticket = null }) {
   const statusCopy = getStatusCopy(status)
-  const icsContent = buildEventIcs(event)
   const eventUrl = `${env.CLIENT_URL}/events/${event.shortId}`
-  const attachments = [
-    {
+  const shouldAttachCalendar = ['pending', 'approved', 'registered'].includes(status)
+  const attachments = []
+
+  if (shouldAttachCalendar) {
+    const icsContent = buildEventIcs(event)
+    attachments.push({
       filename: `${event.shortId}.ics`,
       content: Buffer.from(icsContent).toString('base64'),
-    },
-  ]
+    })
+  }
 
   if (ticket?.pdfBuffer) {
     attachments.push({
@@ -196,18 +213,61 @@ async function sendRegistrationConfirmationEmail({ email, name, status, event, t
         <div style="margin-top:20px">
           <a href="${eventUrl}" style="display:inline-block;background:#111;color:#fff;padding:12px 18px;border-radius:6px;text-decoration:none;font-weight:600;font-size:14px">View Event</a>
         </div>
-        <p style="color:#888;font-size:12px;margin-top:20px">A calendar invite is attached as an .ics file.</p>
+        ${shouldAttachCalendar ? '<p style="color:#888;font-size:12px;margin-top:20px">A calendar invite is attached as an .ics file.</p>' : ''}
       </div>
     `,
     attachments,
   })
 }
 
+async function sendEventInvitationEmail({ email, event, inviterName, subject = null, message = null }) {
+  const eventUrl = `${env.CLIENT_URL}/events/${event.shortId}`
+  const heading = inviterName ? `${inviterName} invited you` : 'You are invited'
+
+  return sendEmail({
+    to: email,
+    subject: subject || `You're invited: ${event.name}`,
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:32px">
+        <h2 style="color:#111;margin-bottom:8px">${heading}</h2>
+        <p style="color:#555;font-size:15px;margin-top:0">${event.name}</p>
+        <div style="background:#f4f4f5;border-radius:8px;padding:16px;margin:20px 0">
+          <p style="margin:0 0 8px;color:#111;font-weight:600">${new Date(event.startDatetime).toLocaleString()} - ${new Date(event.endDatetime).toLocaleString()}</p>
+          <p style="margin:0;color:#555;font-size:14px">${getLocationText(event)}</p>
+        </div>
+        ${message ? `<div style="margin:16px 0;color:#333;font-size:14px;line-height:1.5">${message}</div>` : ''}
+        <a href="${eventUrl}" style="display:inline-block;background:#111;color:#fff;padding:12px 18px;border-radius:6px;text-decoration:none;font-weight:600;font-size:14px">View Event</a>
+      </div>
+    `,
+  })
+}
+
+async function sendEventBlastEmail({ email, subject, content, event }) {
+  const eventUrl = `${env.CLIENT_URL}/events/${event.shortId}`
+
+  return sendEmail({
+    to: email,
+    subject,
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;padding:32px">
+        <p style="margin:0 0 12px;color:#111;font-size:18px;font-weight:700">${event.name}</p>
+        <div style="color:#222;font-size:14px;line-height:1.55">${content}</div>
+        <div style="margin-top:20px">
+          <a href="${eventUrl}" style="display:inline-block;background:#111;color:#fff;padding:12px 18px;border-radius:6px;text-decoration:none;font-weight:600;font-size:14px">View Event</a>
+        </div>
+      </div>
+    `,
+  })
+}
+
 export {
+  sendEmail,
   generateOTP,
   sendVerificationOTP,
   sendRegistrationVerificationOTP,
   sendPasswordResetEmail,
   sendWelcomeEmail,
   sendRegistrationConfirmationEmail,
+  sendEventInvitationEmail,
+  sendEventBlastEmail,
 }

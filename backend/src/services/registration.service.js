@@ -4,6 +4,7 @@ import {
   emailVerifications,
   eventHosts,
   events,
+  payments,
   registrationQuestions,
   registrations,
   users,
@@ -677,6 +678,80 @@ async function approveRegistrationById({ registrationId, userId }) {
   return serializeRegistration(registrationWithQr, row.event)
 }
 
+async function rejectRegistrationById({ registrationId, userId }) {
+  assertDb()
+
+  const [row] = await db
+    .select({
+      registration: registrations,
+      event: events,
+    })
+    .from(registrations)
+    .innerJoin(events, eq(registrations.eventId, events.id))
+    .where(eq(registrations.id, registrationId))
+    .limit(1)
+
+  if (!row) {
+    const err = new Error('Registration not found')
+    err.statusCode = 404
+    throw err
+  }
+
+  const [access] = await db
+    .select({ id: eventHosts.id })
+    .from(eventHosts)
+    .where(and(eq(eventHosts.eventId, row.event.id), eq(eventHosts.userId, userId)))
+    .limit(1)
+
+  if (!access) {
+    const err = new Error('You do not have permission to manage this registration')
+    err.statusCode = 403
+    throw err
+  }
+
+  if (row.registration.status === 'rejected') {
+    return serializeRegistration(row.registration, row.event)
+  }
+
+  if (row.registration.status === 'cancelled') {
+    const err = new Error('Cancelled registrations cannot be rejected')
+    err.statusCode = 400
+    throw err
+  }
+
+  const nextPaymentStatus =
+    row.registration.paymentStatus === 'completed' ? 'refunded' : row.registration.paymentStatus
+
+  const [updatedRegistration] = await db
+    .update(registrations)
+    .set({
+      status: 'rejected',
+      paymentStatus: nextPaymentStatus,
+      updatedAt: new Date(),
+    })
+    .where(eq(registrations.id, row.registration.id))
+    .returning()
+
+  if (row.registration.paymentStatus === 'completed') {
+    await db
+      .update(payments)
+      .set({
+        status: 'refunded',
+        updatedAt: new Date(),
+      })
+      .where(and(eq(payments.registrationId, row.registration.id), eq(payments.status, 'completed')))
+  }
+
+  if (updatedRegistration.emailVerified) {
+    await sendRegistrationStatusEmail({
+      registration: updatedRegistration,
+      event: row.event,
+    })
+  }
+
+  return serializeRegistration(updatedRegistration, row.event)
+}
+
 async function getGuestProfile({ userId = null, email = null }) {
   assertDb()
 
@@ -792,5 +867,6 @@ export {
   resendRegistrationOtp,
   verifyRegistrationEmailOtp,
   approveRegistrationById,
+  rejectRegistrationById,
   getGuestProfile,
 }
